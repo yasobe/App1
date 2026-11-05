@@ -27,6 +27,11 @@ let tab = 'status';
 //  אתחול
 // =====================================================================
 function boot() {
+  // הגנה מ-clickjacking: האפליקציה לא רצה בתוך אתר אחר
+  if (window.top !== window.self) {
+    document.body.innerHTML = '<p style="padding:20px;text-align:center">ASCEND לא נפתחת בתוך אתר אחר. <a href="./" target="_top">לפתוח ישירות</a></p>';
+    return;
+  }
   E.load();
   if (!E.state) { renderOnboarding(); return; }
   setInterval(updateSpecialCountdown, 1000);
@@ -41,7 +46,7 @@ function boot() {
   dailyTick();
   // סנכרון דרך כתובת (#sync?steps=...)
   const hs = parseHashSync(location.hash);
-  if (hs) { history.replaceState(null, '', location.pathname); applySync(hs); }
+  if (hs) { history.replaceState(null, '', location.pathname); confirmHashSync(hs); }
   showTabs();
   render();
   checkSpecial();
@@ -262,7 +267,7 @@ function habitsPanel() {
   if (!hs.length) return '';
   return win('HABITS', `
     ${hs.map(h => { const { days, auto } = E.habitInfo(h); return `
-      <div style="margin:8px 0"><div class="row between small"><span>${h.icon} ${esc(h.name)}</span><span class="muted">${auto >= 0.95 ? '🌳 מושרש' : `${days} ימים · ${Math.round(auto * 100)}%`}</span></div>
+      <div style="margin:8px 0"><div class="row between small"><span>${esc(h.icon)} ${esc(h.name)}</span><span class="muted">${auto >= 0.95 ? '🌳 מושרש' : `${days} ימים · ${Math.round(auto * 100)}%`}</span></div>
       <div class="bar" style="height:6px"><i style="width:${(auto * 100).toFixed(1)}%;background:var(--good);box-shadow:0 0 8px var(--good)"></i></div></div>`; }).join('')}
     <p class="small muted" style="margin:8px 0 0">אוטומטיות = כמה ההרגל קרוב לקרות בלי מחשבה. בממוצע ~${HABIT_MEDIAN_DAYS} ימים של ביצוע (Lally 2010).</p>
   `, { icon: '✅' });
@@ -511,13 +516,13 @@ function habitManager() {
     <p class="small" id="habCount"></p>
     ${E.activeHabits().length ? `<div class="sub-h">📍 מתי ואיפה — לכל הרגל</div>
     <p class="small muted" style="margin:0 0 4px">"אחרי הקפה בבוקר, במטבח". תוכנית כזו מגדילה מאוד את הסיכוי שזה יקרה (Gollwitzer & Sheeran 2006).</p>
-    ${E.activeHabits().map(h => `<div class="plan-row"><span class="small">${h.icon} ${esc(h.name)}</span>
+    ${E.activeHabits().map(h => `<div class="plan-row"><span class="small">${esc(h.icon)} ${esc(h.name)}</span>
       <div class="row" style="gap:6px"><input type="text" class="grow" data-pw="${h.id}" maxlength="40" placeholder="מתי / אחרי מה" value="${esc(h.plan?.when || '')}"><input type="text" class="grow" data-pl="${h.id}" maxlength="30" placeholder="איפה" value="${esc(h.plan?.where || '')}"></div></div>`).join('')}` : ''}
     ${Object.entries(HABIT_CATEGORIES).map(([c, he]) => `
       <div class="sub-h">${he}</div>
       <div class="seg">${HABIT_LIBRARY.filter(h => h.cat === c).map(h => `<button type="button" data-h="${h.key}" class="${on.has(h.key) ? 'on' : ''}">${h.icon} ${h.name}${h.effects ? ' ✦' : ''}</button>`).join('')}</div>`).join('')}
     <div class="sub-h">משלך</div>
-    ${custom.map(h => `<div class="row between small" style="margin:6px 0"><span>${h.icon} ${esc(h.name)}</span><button class="btn ghost" data-del="${h.id}" style="min-height:32px;padding:4px 10px">הסרה</button></div>`).join('')}
+    ${custom.map(h => `<div class="row between small" style="margin:6px 0"><span>${esc(h.icon)} ${esc(h.name)}</span><button class="btn ghost" data-del="${h.id}" style="min-height:32px;padding:4px 10px">הסרה</button></div>`).join('')}
     <div class="row" style="gap:6px">
       <select id="cIcon" style="width:72px">${HABIT_ICONS.map(i => `<option>${i}</option>`).join('')}</select>
       <input type="text" id="cName" maxlength="40" placeholder="למשל: להשקות עציצים" class="grow">
@@ -1255,7 +1260,7 @@ function renderLog() {
   ${win('PROGRESS', `<p class="small muted" style="margin-top:0">שיפור מצטבר ב-% מנקודת ההתחלה</p>${bigChart()}`, { icon: '↗' })}
   ${win('LOG', L.length ? L.slice(0, 80).map(e => `
     <div class="log-item" data-l="${e.id}">
-      <div class="row between"><span><b>${esc(entryTitle(e))}</b></span><span class="small muted en">${e.date}</span></div>
+      <div class="row between"><span><b>${esc(entryTitle(e))}</b></span><span class="small muted en">${esc(e.date)}</span></div>
       <div class="small muted">${e.params.duration ? e.params.duration + ' דק׳' : ''}${e.params.distance ? ' · ' + e.params.distance + ' ק״מ' : ''}${e.params.reps ? e.params.reps + ' חזרות' : ''}${e.params.hours != null ? e.params.hours + ' שעות' : ''}${e.params.rpe ? ' · RPE ' + e.params.rpe : ''}${e.source !== 'manual' ? ' · ' + esc(e.source) : ''} · +${e.xp} EXP</div>
       <div class="chips">${Object.entries(e.gains).map(([k, v]) => `<span class="chip" style="border-color:${STATS[k].color};color:${STATS[k].color}">${k} +${v.toFixed(2)}%</span>`).join('')}</div>
     </div>`).join('') : '<p class="muted center">עוד אין פעילויות. השלימו משימה ראשונה!</p>', { icon: '≡' })}
@@ -1278,7 +1283,7 @@ function renderSystem() {
   ${win('PLAYER', `
     <form id="pf">
       <label class="f">שם</label><input type="text" name="name" value="${esc(P.name)}" maxlength="24">
-      <div class="row"><div class="grow"><label class="f">גיל</label><input type="number" name="age" value="${P.age}"></div><div class="grow"><label class="f">משקל</label><input type="text" inputmode="decimal" name="weightKg" value="${P.weightKg}"></div></div>
+      <div class="row"><div class="grow"><label class="f">גיל</label><input type="number" name="age" value="${esc(P.age)}"></div><div class="grow"><label class="f">משקל</label><input type="text" inputmode="decimal" name="weightKg" value="${esc(P.weightKg)}"></div></div>
       <label class="f">ציוד</label><select name="equipment"><option value="none" ${P.equipment === 'none' ? 'selected' : ''}>בלי ציוד</option><option value="gym" ${P.equipment === 'gym' ? 'selected' : ''}>חדר כושר</option></select>
       <label class="f">ימי אימון בשבוע</label><select name="daysPerWeek">${[3, 4, 5, 6].map(n => `<option ${+P.daysPerWeek === n ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <button class="btn block" style="margin-top:12px">שמירה</button>
@@ -1361,8 +1366,13 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 }
 window.addEventListener('hashchange', () => {
   const hs = parseHashSync(location.hash);
-  if (hs && E.state) { history.replaceState(null, '', location.pathname); applySync(hs); }
+  if (hs && E.state) { history.replaceState(null, '', location.pathname); confirmHashSync(hs); }
 });
+// קישור #sync יכול להגיע מכל מקום — לא מחילים בלי אישור של המשתמש
+function confirmHashSync(d) {
+  const lines = Object.entries(d).filter(([k]) => k !== 'date').map(([k, v]) => `${k}: ${v}`).join('\n');
+  setTimeout(() => { if (confirm(`קישור מבקש להוסיף נתוני בריאות:\n${lines}\n\nלהוסיף? (רק אם הרצת את קיצור הדרך שלך)`)) applySync(d); }, 300);
+}
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && E.state) {
     if (!E.clockCheck().ok) return render();

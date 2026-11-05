@@ -37,11 +37,30 @@ function cyrb53(str, seed = 0) {
 }
 const sign = json => cyrb53(SALT + json + SALT, 7);
 
+// ---- ניקוי נתונים מבחוץ (גיבוי / localStorage): נגד XSS וזיהום prototype ----
+// מסיר תווים שמאפשרים הזרקת HTML/מאפיינים, וזורק מפתחות מסוכנים.
+const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+export function sanitize(v, depth = 0) {
+  if (depth > 12) return null;
+  if (typeof v === 'string') return v.replace(/[<>"'`\\]/g, '').slice(0, 2000);
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (Array.isArray(v)) return v.slice(0, 50000).map(x => sanitize(x, depth + 1));
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v)) {
+      if (BAD_KEYS.has(k)) continue;
+      o[k.replace(/[<>"'`\\]/g, '').slice(0, 100)] = sanitize(v[k], depth + 1);
+    }
+    return o;
+  }
+  return typeof v === 'boolean' || v === null ? v : null;
+}
+
 export function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
-      state = JSON.parse(raw);
+      state = sanitize(JSON.parse(raw));
       const sig = localStorage.getItem(SIG_KEY);
       // אין חתימה = גרסה ישנה, חותמים בפעם הראשונה. חתימה שגויה = נערך ידנית.
       if (sig && sig !== sign(raw)) {
@@ -72,7 +91,8 @@ export function importBackup(text) {
   let s, verified;
   if (o.format === 'ascend-backup') { s = JSON.parse(o.state); verified = o.sig === sign(o.state); }
   else { s = o; verified = false; } // גיבוי מגרסה ישנה, לא חתום
-  if (!s.stats || !s.profile) throw new Error('קובץ לא תקין');
+  s = sanitize(s);
+  if (!s || !s.stats || !s.profile || !Array.isArray(s.log) || typeof s.quests !== 'object') throw new Error('קובץ לא תקין');
   s.flags ||= {};
   if (!verified) s.flags[o.format === 'ascend-backup' ? 'tampered' : 'unverified'] ||= today();
   return { state: s, verified };
@@ -390,6 +410,7 @@ export function saveCheckin(date, data) {
 // טווחים סבירים לנתוני בריאות — ערך מחוץ לטווח נזרק
 const HEALTH_RANGE = { steps: [0, 70000], sleepH: [0, 16], rhr: [25, 150], hrv: [5, 300], vo2: [15, 90], activeKcal: [0, 8000], exerciseMin: [0, 600], weightKg: [25, 300] };
 export function mergeHealth(date, data) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today()) return; // תאריך לא תקין / עתידי
   const cur = state.health[date] || {};
   for (const [k, v] of Object.entries(data)) {
     if (v === null || v === undefined || Number.isNaN(v)) continue;
@@ -850,6 +871,7 @@ export function penaltyCheck() {
 // ---------------- ייבוא אימונים מ-Apple Health ----------------
 export function importWorkout(w) {
   if (state.importedWorkouts[w.key]) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(w.date) || w.date > today()) return null; // לא מקבלים תאריך עתידי
   if (w.date < state.profile.startedAt) return null; // לא סופרים עבר — זה כבר מגולם ברמת האימון ההתחלתית
   state.importedWorkouts[w.key] = true;
   const entry = applyActivity(w.type, w.params, { date: w.date, source: w.source || 'Apple Health' });

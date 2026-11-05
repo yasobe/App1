@@ -32,7 +32,7 @@ export function parseSyncText(text) {
     let v = m[2].replace(/,(?=\d{3}(\D|$))/g, '').replace(',', '.');
     if (k === 'date') continue;
     if (k === 'sleepmin') { out.sleepH = round(parseFloat(v) / 60, 2); found++; continue; }
-    const key = KEYMAP[k];
+    const key = Object.hasOwn(KEYMAP, k) ? KEYMAP[k] : null;
     if (!key) continue;
     const n = parseFloat(v);
     if (Number.isFinite(n)) { out[key] = n; found++; }
@@ -82,17 +82,22 @@ function toDate(s) {
 export async function importHealthExport(file, { sinceDay, age, onProgress }) {
   const cutoff = sinceDay; // "YYYY-MM-DD" — מה שלפני זה מדלגים
   // per day per source sums → בסוף לוקחים את המקור הגבוה ביותר כדי לא לספור כפול (אייפון + שעון)
-  const sumBySrc = { steps: {}, sleep: {}, kcal: {}, exmin: {} };
-  const avg = { rhr: {}, hrv: {}, vo2: {}, weight: {} };
+  // מפות בלי prototype — קובץ זדוני עם "__proto__" לא יכול לזהם אובייקטים
+  const M = () => Object.create(null);
+  const sumBySrc = { steps: M(), sleep: M(), kcal: M(), exmin: M() };
+  const avg = { rhr: M(), hrv: M(), vo2: M(), weight: M() };
+  const DATE = /^\d{4}-\d{2}-\d{2}$/;
   const workouts = [];
   let cur = null; // workout בתהליך
   let lines = 0;
 
   const addSum = (bucket, day, src, v) => {
-    const b = (bucket[day] ||= {});
+    if (!DATE.test(day) || !Number.isFinite(v)) return;
+    const b = (bucket[day] ||= Object.create(null));
     b[src] = (b[src] || 0) + v;
   };
   const addAvg = (bucket, day, v) => {
+    if (!DATE.test(day) || !Number.isFinite(v)) return;
     const b = (bucket[day] ||= { s: 0, n: 0 });
     b.s += v; b.n++;
   };
@@ -114,7 +119,7 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
     }
     if (line.includes('<Workout ')) {
       const sd = attr(line, 'startDate');
-      if (!sd || sd.slice(0, 10) < cutoff) { if (!line.includes('/>')) cur = { skip: true }; return; }
+      if (!sd || !DATE.test(sd.slice(0, 10)) || sd.slice(0, 10) < cutoff) { if (!line.includes('/>')) cur = { skip: true }; return; }
       const type = (attr(line, 'workoutActivityType') || '').replace('HKWorkoutActivityType', '');
       let dur = parseFloat(attr(line, 'duration')) || 0;
       const du = attr(line, 'durationUnit');
@@ -129,7 +134,7 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
     const type = attr(line, 'type');
     if (!type) return;
     const sd = attr(line, 'startDate');
-    if (!sd || sd.slice(0, 10) < cutoff) return;
+    if (!sd || !DATE.test(sd.slice(0, 10)) || sd.slice(0, 10) < cutoff) return;
     const src = attr(line, 'sourceName') || '?';
     const day = sd.slice(0, 10);
     switch (type) {
@@ -147,7 +152,7 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
         if (!val.includes('Asleep')) break;
         const ed = attr(line, 'endDate');
         const h = (toDate(ed) - toDate(sd)) / 3600000;
-        if (h > 0 && h < 16) addSum(sumBySrc.sleep, ed.slice(0, 10), src, h);
+        if (ed && h > 0 && h < 16) addSum(sumBySrc.sleep, ed.slice(0, 10), src, h);
         break;
       }
     }
@@ -160,6 +165,8 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
     const text = leftover + decoder.decode(chunk, { stream: !final });
     const parts = text.split('\n');
     leftover = final ? '' : parts.pop();
+    // קובץ בלי שורות (או שורה ענקית) — לא נותנים לו למלא את הזיכרון
+    if (leftover.length > 1e6) leftover = '';
     for (const l of parts) handleLine(l);
     if (final && leftover) handleLine(leftover);
   };
@@ -204,8 +211,8 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
   });
 
   // ---- סיכום ----
-  const days = {};
-  const put = (day, k, v) => { (days[day] ||= {})[k] = v; };
+  const days = Object.create(null);
+  const put = (day, k, v) => { (days[day] ||= Object.create(null))[k] = v; };
   const maxSrc = o => Math.max(...Object.values(o));
   for (const [d, o] of Object.entries(sumBySrc.steps)) put(d, 'steps', Math.round(maxSrc(o)));
   for (const [d, o] of Object.entries(sumBySrc.sleep)) put(d, 'sleepH', round(maxSrc(o), 2));
@@ -214,12 +221,12 @@ export async function importHealthExport(file, { sinceDay, age, onProgress }) {
   for (const [k, key] of [['rhr', 'rhr'], ['hrv', 'hrv'], ['vo2', 'vo2'], ['weight', 'weightKg']])
     for (const [d, o] of Object.entries(avg[k])) if (o.n) put(d, key, round(o.s / o.n, 1));
 
-  const mapped = workouts.filter(w => !w.skip && w.duration > 3).map(w => {
-    const t = WORKOUT_MAP[w.type] || 'cardio';
+  const mapped = workouts.filter(w => !w.skip && w.duration > 3 && w.duration < 1440 && DATE.test(w.day || '')).map(w => {
+    const t = Object.hasOwn(WORKOUT_MAP, w.type) ? WORKOUT_MAP[w.type] : 'cardio';
     const rpe = rpeFromHR(w.avgHR, age) ?? (t === 'intervals' ? 8 : t === 'strength' ? 7 : 6);
     const params = t === 'sprints' ? { reps: 6, rpe } : { duration: Math.round(w.duration), rpe };
     if (w.distanceKm) params.distance = round(w.distanceKm, 2);
-    return { key: w.start + '|' + w.type, date: w.day, type: t, params, source: w.source, rawType: w.type, avgHR: w.avgHR };
+    return { key: w.start + '|' + w.type, date: w.day, type: t, params, source: String(w.source).replace(/[<>"'`]/g, '').slice(0, 60), rawType: w.type, avgHR: w.avgHR };
   }).sort((a, b) => a.key.localeCompare(b.key));
 
   return { days, workouts: mapped, lines };
