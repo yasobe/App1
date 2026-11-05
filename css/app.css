@@ -204,3 +204,12 @@ code { background: rgba(255,255,255,.07); padding: 1px 5px; border-radius: 3px; 
 .timer-box { border: 1px solid var(--line-soft); border-radius: var(--radius); padding: 10px; margin: 10px 0; text-align: center; background: rgba(0,0,0,.2); }
 .tm-big { font-size: 40px; font-weight: 800; margin: 2px 0 8px; text-shadow: 0 0 12px rgba(79,179,255,.7); }
 .btn[disabled] { pointer-events: none; }
+
+/* special quests */
+.sp-win { border-color: var(--rc); box-shadow: 0 0 16px color-mix(in srgb, var(--rc) 55%, transparent), inset 0 0 18px color-mix(in srgb, var(--rc) 15%, transparent); }
+.sp-win::before, .sp-win::after { border-color: var(--rc); }
+.modal:has(.sp-alert) { border-color: var(--rc, var(--line)); }
+.sp-alert { animation: spPulse 1.6s ease-in-out infinite alternate; }
+.sp-icon { font-size: 54px; text-align: center; margin: 4px 0; filter: drop-shadow(0 0 12px rgba(255,255,255,.35)); }
+.rar { display: inline-block; font-size: 11.5px; padding: 1px 8px; border: 1px solid; border-radius: 99px; margin: 0 2px; }
+@keyframes spPulse { from { filter: none; } to { filter: drop-shadow(0 0 6px var(--rc)); } }

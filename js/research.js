@@ -264,6 +264,7 @@ export const SOURCES = {
   curry2018: 'Curry OS et al. — Happy to help? A systematic review and meta-analysis of the effects of performing acts of kindness on the well-being of the actor. J Exp Soc Psychol. 2018;76:320–329.',
   holtlunstad2010: 'Holt-Lunstad J, Smith TB, Layton JB — Social relationships and mortality risk: a meta-analytic review. PLoS Med. 2010;7(7):e1000316.',
   golden2005: 'Golden RN et al. — The efficacy of light therapy in the treatment of mood disorders: a review and meta-analysis of the evidence. Am J Psychiatry. 2005;162(4):656–662.',
+  seligman2005: 'Seligman MEP, Steen TA, Park N, Peterson C — Positive psychology progress: empirical validation of interventions. Am Psychol. 2005;60(5):410–421.',
   tanaka2001: 'Tanaka H, Monahan KD, Seals DR — Age-predicted maximal heart rate revisited. J Am Coll Cardiol. 2001;37(1):153–156.',
 };
 

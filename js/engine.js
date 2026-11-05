@@ -6,6 +6,7 @@ import {
   computeDose, clamp, fmt,
 } from './research.js';
 import { HABIT_LIBRARY, libraryItem, automaticity } from './habits.js';
+import { SPECIAL_POOL, RARITY, poolItem, seeded } from './specials.js';
 
 const STORE_KEY = 'ascend.v1';
 
@@ -188,6 +189,7 @@ export function deleteEntry(id) {
   }
   state.xp = Math.max(0, state.xp - (e.xp || 0));
   state.log.splice(i, 1);
+  if (e.special) reopenSpecial(e.special);
   const day = state.quests[e.date];
   const qq = day?.items.find(x => x.logId === id || (e.questId && x.id === e.questId));
   if (qq && qq.done) uncompleteQuest(e.date, qq.id);
@@ -774,3 +776,110 @@ export function autoCompleteFromHealth(date) {
 
 export function addBonusXP(n) { return addXP(n); }
 export { fmt };
+
+// ---------------- משימות מיוחדות (אקראיות) ----------------
+// מופיעות פעם בכמה ימים בשעה אקראית (09:00–20:00): לפחות יומיים בין שתיים,
+// סיכוי 35% ביום אחרי זה, ובטוח אחרי 5 ימים. הגרלה דטרמיניסטית לפי התאריך —
+// רענון של האפליקציה לא מגריל מחדש.
+function sp() {
+  // הראשונה מגיעה למחרת היום הראשון (לא מפריעה להערכה הראשונית)
+  state.special ||= { lastDate: addDays(state.profile.startedAt, -4), offers: {}, history: [], done: 0 };
+  return state.special;
+}
+export function specialStats() { const S = sp(); return { done: S.done, history: S.history }; }
+
+export function specialOffer(date = today()) {
+  const S = sp();
+  if (S.offers[date] !== undefined) return S.offers[date];
+  if (date <= state.profile.startedAt) return null;
+  const rng = seeded(date + '|' + state.profile.startedAt);
+  const since = daysBetween(S.lastDate, date);
+  const prob = since >= 5 ? 1 : since >= 2 ? 0.35 : 0;
+  let offer = null;
+  if (rng() < prob) {
+    const noPhysical = painActive(date) || !!state.quests[date]?.rest;
+    const recent = S.history.slice(-10).map(h => h.key);
+    const pool = SPECIAL_POOL.filter(x => !recent.includes(x.key) && !(noPhysical && x.physical));
+    const r = rng() * 100;
+    const rar = r < RARITY.epic.weight ? 'epic' : r < RARITY.epic.weight + RARITY.rare.weight ? 'rare' : 'common';
+    let cand = pool.filter(x => x.rarity === rar);
+    if (!cand.length) cand = pool;
+    const item = cand[Math.floor(rng() * cand.length)];
+    const hour = 9 + rng() * 11;
+    const appear = parseDay(date); appear.setHours(Math.floor(hour), Math.floor((hour % 1) * 60), 0, 0);
+    const urgent = !!item.urgent && rng() < 0.4;
+    const L = levelInfo().level;
+    offer = {
+      id: 'S' + Math.random().toString(36).slice(2, 9), key: item.key, date, rarity: item.rarity, urgent,
+      appearAt: appear.getTime(), deadline: null, status: 'pending',
+      title: item.title(L), desc: item.desc, icon: item.icon, type: item.type, act: item.act || null,
+      target: item.target ? item.target(L) : null, note: item.note || null,
+      xp: Math.round(RARITY[item.rarity].xp * (urgent ? 1.5 : 1)),
+    };
+    S.lastDate = date;
+  }
+  S.offers[date] = offer;
+  save();
+  return offer;
+}
+
+// נקרא כשהאפליקציה פתוחה: מחזיר אירועים (הצעה חדשה / פג תוקף)
+export function specialTick(now = Date.now()) {
+  const S = sp(); const t = today(); const events = [];
+  for (const [d, o] of Object.entries(S.offers)) {
+    if (!o) continue;
+    if ((o.status === 'active' || o.status === 'offered') && o.deadline && now > o.deadline) {
+      o.status = o.status === 'active' ? 'failed' : 'missed';
+      S.history.push({ key: o.key, date: o.date, status: o.status });
+      events.push({ kind: 'expired', offer: o });
+    } else if (o.status === 'pending' && d < t) o.status = 'missed';
+  }
+  const o = specialOffer(t);
+  if (o && o.status === 'pending' && now >= o.appearAt) {
+    o.status = 'offered'; o.shownAt = now;
+    const eod = parseDay(t); eod.setHours(23, 59, 59, 0);
+    // משימת חירום: שעתיים מהרגע שהופיעה (לא אם נשאר פחות מחצי שעה ביום)
+    if (o.urgent && eod - now < 2 * 3600e3) o.urgent = false;
+    o.deadline = o.urgent ? now + 2 * 3600e3 : eod.getTime();
+    events.push({ kind: 'offer', offer: o });
+  } else if (o && o.status === 'offered') events.push({ kind: 'offer', offer: o });
+  save();
+  return events;
+}
+
+export function answerSpecial(id, accept) {
+  const o = Object.values(sp().offers).find(x => x && x.id === id);
+  if (!o || o.status !== 'offered') return null;
+  o.status = accept ? 'active' : 'declined';
+  if (!accept) sp().history.push({ key: o.key, date: o.date, status: 'declined' });
+  save();
+  return o;
+}
+export function activeSpecial() {
+  return Object.values(sp().offers).find(o => o && o.status === 'active') || null;
+}
+export function completeSpecial(offer, entry = null) {
+  const S = sp();
+  if (!offer || offer.status !== 'active') return null;
+  if (!entry) {
+    const item = poolItem(offer.key);
+    entry = applyActivity('habit', {}, { effects: item?.effects || {}, label: `★ ${offer.title}`, note: item?.note, xp: 0 });
+  } else entry.label = `★ ${offer.title}`;
+  const bonus = addXP(offer.xp);
+  entry.xp += bonus;
+  entry.special = offer.id;
+  offer.status = 'done'; offer.doneAt = Date.now();
+  S.done++;
+  S.history.push({ key: offer.key, date: offer.date, status: 'done' });
+  save();
+  return { entry, special: bonus };
+}
+// מחיקת פעילות של משימה מיוחדת מחזירה אותה לפתוחה (אם הזמן עוד לא עבר)
+export function reopenSpecial(specialId) {
+  const S = sp();
+  const o = Object.values(S.offers).find(x => x && x.id === specialId);
+  if (!o || o.status !== 'done') return;
+  o.status = Date.now() < o.deadline ? 'active' : 'failed';
+  S.done = Math.max(0, S.done - 1);
+  save();
+}

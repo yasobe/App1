@@ -5,6 +5,7 @@ import {
 import * as E from './engine.js';
 import { parseSyncText, parseHashSync, importHealthExport } from './health.js';
 import { HABIT_LIBRARY, HABIT_CATEGORIES, HABIT_ICONS, HABIT_MEDIAN_DAYS } from './habits.js';
+import { RARITY } from './specials.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -33,7 +34,9 @@ function boot() {
   if (hs) { history.replaceState(null, '', location.pathname); applySync(hs); }
   showTabs();
   render();
-  setInterval(() => { if (E.state && E.state.lastDecay !== E.today()) { dailyTick(); render(); } }, 60000);
+  checkSpecial();
+  setInterval(() => { if (E.state && E.state.lastDecay !== E.today()) { dailyTick(); render(); } if (E.state) checkSpecial(); }, 30000);
+  setInterval(updateSpecialCountdown, 1000);
 }
 
 function dailyTick() {
@@ -167,6 +170,7 @@ function renderStatus() {
         <b>שם</b><span>${esc(P.name)}</span>
         <b>דרגה</b><span><span class="rank">${rk.r}</span> <span class="small">${rk.title}</span></span>
         <b>רצף</b><span>🔥 ${S.streak.count} ימים <span class="small muted">(שיא ${S.streak.best})</span></span>
+        <b>מיוחדות</b><span>★ ${E.specialStats().done} הושלמו</span>
       </div>
     </div>
     <div class="row between small muted" style="margin-top:10px"><span class="en">EXP</span><span class="en">${li.into} / ${li.need}</span></div>
@@ -281,6 +285,7 @@ function renderQuests() {
   const habits = day.items.filter(q => q.kind === 'habit');
   const restLabel = { rest: '🛌 יום מנוחה', sick: '🤒 יום מחלה' }[day.rest];
   app.innerHTML = `
+  ${specialWin()}
   ${assessmentWin(false)}
   ${E.state.habits ? '' : win('NEW', `<p class="center" style="margin-top:0"><b>הדברים הקטנים</b> — מים, קריאה, סידור, שיחה עם חבר…</p><p class="small muted center">בחר/י 2–3 הרגלים יומיים. המערכת תעקוב כמה זמן לוקח להם להפוך לאוטומטיים (בממוצע 66 ימים, Lally 2010).</p><button class="btn block" id="habNew">בחירת הרגלים</button>`, { icon: '✦' })}
   ${win('DAILY QUEST', `
@@ -303,12 +308,94 @@ function renderQuests() {
   `;
   app.querySelectorAll('[data-q]').forEach(b => b.onclick = () => openQuest(t, b.dataset.q));
   bindAssessment();
+  $('#spDo') && ($('#spDo').onclick = doSpecial);
   $('#freeAct').onclick = freeActivity;
   $('#habBtn').onclick = habitManager;
   $('#habNew') && ($('#habNew').onclick = habitManager);
   $('#habEdit') && ($('#habEdit').onclick = habitManager);
   $('#restBtn') && ($('#restBtn').onclick = () => restDialog(t));
   $('#unrest') && ($('#unrest').onclick = () => { E.unmarkRest(t); render(); });
+}
+
+// ---------- משימות מיוחדות ----------
+const spShown = new Set();
+function checkSpecial() {
+  if (!E.state) return;
+  const evs = E.specialTick();
+  for (const ev of evs) {
+    if (ev.kind === 'expired') toast(ev.offer.status === 'failed' ? `⌛ המשימה המיוחדת "${ev.offer.title}" פגה` : `⌛ פספסת משימה מיוחדת: ${ev.offer.title}`);
+    if (ev.kind === 'offer' && !spShown.has(ev.offer.id)) { spShown.add(ev.offer.id); showSpecialOffer(ev.offer); }
+  }
+  if (evs.length && tab === 'quests' && !document.querySelector('.modal-back')) render();
+}
+function deadlineText(o) {
+  const d = new Date(o.deadline);
+  return o.urgent ? `שעתיים — עד ${d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}` : 'עד סוף היום';
+}
+function showSpecialOffer(o) {
+  if (document.querySelector('.modal-back')) return setTimeout(() => showSpecialOffer(o), 800);
+  if (o.status !== 'offered') return;
+  const R = RARITY[o.rarity];
+  modal(`
+    <div class="sp-alert" style="--rc:${R.color}">
+      <div class="win-title"><span class="badge-i" style="border-color:${R.color};color:${R.color}">!</span><span class="en" style="color:${R.color}">${o.urgent ? 'EMERGENCY QUEST' : 'SPECIAL QUEST'}</span></div>
+      <p class="center small"><span class="rar" style="border-color:${R.color};color:${R.color}">${R.he}</span>${o.urgent ? ' <span class="rar" style="border-color:var(--bad);color:var(--bad)">חירום ×1.5</span>' : ''}</p>
+      <div class="sp-icon">${o.icon}</div>
+      <h2 class="center" style="margin:4px 0">${esc(o.title)}</h2>
+      <p class="center small muted">${esc(o.desc)}</p>
+      <div class="tiles" style="grid-template-columns:1fr 1fr;margin:12px 0">
+        <div class="tile"><div class="t">מגבלת זמן</div><div class="n" style="font-size:15px">${deadlineText(o)}</div></div>
+        <div class="tile"><div class="t">פרס</div><div class="n" style="color:var(--warn)">+${o.xp} EXP</div></div>
+      </div>
+      ${o.note ? `<p class="small muted">${esc(o.note)}</p>` : ''}
+      <button class="btn block" id="spYes" style="border-color:${R.color}">קבלה ✔</button>
+      <div style="height:8px"></div>
+      <button class="btn ghost block" id="spNo">דחייה</button>
+      <p class="small muted center">דחייה בלי עונש. המשימה הבאה תופיע בעוד כמה ימים, בשעה אקראית.</p>
+    </div>
+  `, m => {
+    m.querySelector('#spYes').onclick = () => { E.answerSpecial(o.id, true); closeModal(); tab = 'quests'; render(); toast('המשימה התקבלה ★'); };
+    m.querySelector('#spNo').onclick = () => { E.answerSpecial(o.id, false); closeModal(); render(); };
+  });
+}
+function specialWin() {
+  const o = E.activeSpecial();
+  if (!o) return '';
+  const R = RARITY[o.rarity];
+  return `<section class="win sp-win" style="--rc:${R.color}"><div class="win-title"><span class="badge-i" style="border-color:${R.color};color:${R.color}">★</span><span class="en" style="color:${R.color}">${o.urgent ? 'EMERGENCY QUEST' : 'SPECIAL QUEST'}</span></div>
+    <div class="row"><span style="font-size:30px">${o.icon}</span><span class="grow"><b>${esc(o.title)}</b><div class="small muted">${esc(o.desc)}</div></span></div>
+    <div class="row between small" style="margin-top:8px"><span class="timer">⏳ <span id="spLeft" data-dl="${o.deadline}">${mmssLong(o.deadline - Date.now())}</span></span><span style="color:var(--warn)">+${o.xp} EXP · ${R.he}</span></div>
+    <button class="btn block" id="spDo" style="margin-top:10px;border-color:${R.color}">השלמה ✔</button></section>`;
+}
+function mmssLong(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}` : `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+function updateSpecialCountdown() {
+  const el = document.getElementById('spLeft');
+  if (!el) return;
+  const left = Number(el.dataset.dl) - Date.now();
+  el.textContent = mmssLong(left);
+  if (left <= 0) checkSpecial();
+}
+function doSpecial() {
+  const o = E.activeSpecial();
+  if (!o) return;
+  if (o.type === 'act') {
+    const t = o.target || {};
+    const timer = t.duration && o.act !== 'strength' ? { countdown: t.duration } : o.act === 'strength' ? { rest: 60 } : null;
+    return activityForm(o.act, { quest: { id: o.id, kind: o.act, title: `★ ${o.title}`, desc: o.desc, target: t, timer, special: o, main: false } });
+  }
+  modal(`
+    <div class="win-title"><span class="badge-i">★</span><span>${esc(o.title)}</span></div>
+    <p class="center" style="font-size:40px;margin:6px 0">${o.icon}</p>
+    <p class="center">ביצעת?</p>
+    <button class="btn block" id="yes">כן, בוצע ✔</button>
+  `, m => m.querySelector('#yes').onclick = () => {
+    const r = E.completeSpecial(o);
+    closeModal(); render();
+    if (r) showResult(r.entry, r);
+  });
 }
 
 function restDialog(date) {
@@ -485,7 +572,7 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
     rpe: `<label class="f">מאמץ (RPE): <span class="range-val" id="rpeV">${v.rpe}</span>/10 — <span id="rpeL" class="small"></span></label><input type="range" name="rpe" min="1" max="10" step="0.5" value="${v.rpe}">`,
   };
   const journal = type === 'journal' ? `<label class="f">3 דברים טובים מהיום</label><textarea name="notes" placeholder="1.&#10;2.&#10;3.">${esc(v.notes || '')}</textarea>` : '';
-  const canSwap = quest && E.SWAP_OPTIONS[quest.kind];
+  const canSwap = quest && !quest.special && E.SWAP_OPTIONS[quest.kind];
   const isTraining = quest && ['str', 'end', 'spd'].includes(quest.cat);
   modal(`
     <div class="win-title"><span class="badge-i">${A.icon}</span><span>${esc(quest?.title || A.he)}</span></div>
@@ -520,6 +607,12 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
       if (A.fields.includes('duration') && !(p.duration > 0)) return toast('הזינו משך');
       if (type === 'sleep' && !(p.hours >= 0)) return toast('הזינו שעות שינה');
       stopTimer();
+      if (quest?.special) {
+        const entry = E.applyActivity(type, p, { date });
+        const r = E.completeSpecial(quest.special, entry);
+        closeModal(); render();
+        return showResult(entry, r);
+      }
       const entry = E.applyActivity(type, p, { date, questId: quest?.id, questMain: quest?.main });
       let clear = null, matched = null;
       if (quest) clear = E.completeQuest(date, quest.id, entry);
@@ -580,9 +673,10 @@ function showResult(entry, clear = null, matchedQuest = null) {
   const pace = entry.params.distance > 0 && entry.params.duration > 0 ? entry.params.duration / entry.params.distance : null;
   const typeName = entry.label || A.he;
   modal(`
-    <div class="win-title"><span class="badge-i">!</span><span class="en">${entry.questId ? 'QUEST COMPLETE' : 'ACTIVITY LOGGED'}</span></div>
+    <div class="win-title"><span class="badge-i">!</span><span class="en">${entry.special ? 'SPECIAL QUEST CLEAR' : entry.questId ? 'QUEST COMPLETE' : 'ACTIVITY LOGGED'}</span></div>
     ${lvl ? `<div class="lvlup en">LEVEL UP!</div><p class="center">רמה <b>${lvl.level}</b> · דרגה <span class="rank">${lvl.rank}</span></p>` : ''}
     <div class="xp-pop en">+${entry.xp + (clear?.bonusXP || 0)} EXP</div>
+    ${clear?.special ? `<p class="center cleared">★ משימה מיוחדת הושלמה! (+${clear.special} מתוכם)</p>` : ''}
     ${clear?.cleared ? '<p class="center cleared">כל המשימות היומיות הושלמו! +50 בונוס</p>' : ''}
     ${matchedQuest ? `<p class="center small good">✓ נספר כמשימה "${esc(matchedQuest.title)}"</p>` : ''}
     <p class="center">${esc(entryTitle(entry))} · <span class="muted small">${entry.source !== 'manual' ? esc(entry.source) + ' · ' : ''}${entry.date}</span></p>
@@ -1134,7 +1228,7 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.2</p>
+  <p class="small muted center en">ASCEND v1.3</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();
@@ -1172,6 +1266,6 @@ window.addEventListener('hashchange', () => {
   if (hs && E.state) { history.replaceState(null, '', location.pathname); applySync(hs); }
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && E.state) { if (E.state.lastDecay !== E.today()) dailyTick(); render(); }
+  if (document.visibilityState === 'visible' && E.state) { if (E.state.lastDecay !== E.today()) dailyTick(); render(); checkSpecial(); }
 });
 boot();
