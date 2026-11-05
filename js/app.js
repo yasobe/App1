@@ -7,6 +7,14 @@ import { parseSyncText, parseHashSync, importHealthExport } from './health.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// מספר מקלט משתמש: מקבל גם פסיק עשרוני (מקלדת iOS בעברית) וגם מינוס
+const num = x => { if (x == null) return NaN; const t = String(x).trim().replace(/[−–]/g, '-').replace(',', '.'); return t === '' ? NaN : Number(t); };
+// תצוגת תוצאת מבחן בשפה רגילה
+const tv = (key, v) => {
+  if (key !== 'sitreach') return `${v} ${TESTS[key].unit}`;
+  if (v === 0) return 'נוגע באצבעות';
+  return v < 0 ? `${Math.abs(v)} ס״מ לפני האצבעות` : `${v} ס״מ אחרי האצבעות`;
+};
 const sgn = (v, d = 2) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(d);
 const app = $('#app');
 let tab = 'status';
@@ -100,7 +108,7 @@ function renderOnboarding() {
       <input type="text" name="name" required maxlength="24" placeholder="השם שלך">
       <div class="row">
         <div class="grow"><label class="f">גיל</label><input type="number" name="age" inputmode="numeric" min="12" max="99" value="25"></div>
-        <div class="grow"><label class="f">משקל (ק״ג)</label><input type="number" name="weight" inputmode="decimal" min="30" max="250" step="0.1" value="75"></div>
+        <div class="grow"><label class="f">משקל (ק״ג)</label><input type="text" name="weight" inputmode="decimal" min="30" max="250" step="0.1" value="75"></div>
       </div>
       <label class="f">רמת כושר נוכחית</label>
       <select name="trainingStatus">${Object.entries(TRAINING_STATUS).map(([k, v]) => `<option value="${k}">${v.he}</option>`).join('')}</select>
@@ -115,7 +123,7 @@ function renderOnboarding() {
     e.preventDefault();
     const f = new FormData(e.target);
     E.createPlayer({
-      name: f.get('name').trim() || 'שחקן', age: +f.get('age') || 25, weightKg: +f.get('weight') || 75,
+      name: f.get('name').trim() || 'שחקן', age: +f.get('age') || 25, weightKg: num(f.get('weight')) || 75,
       trainingStatus: f.get('trainingStatus'), equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek'),
     });
     E.questsFor(E.today());
@@ -222,7 +230,7 @@ function statDetail(k) {
     <b>מדידות</b>
     ${tests.map(([tk, T]) => {
       const bl = E.state.baselines[tk], lt = E.lastTest(tk);
-      return `<div class="row between small" style="margin:6px 0"><span>${T.he}</span><span class="muted">${bl ? `התחלה ${bl.value} → אחרון ${lt.value} ${T.unit}` : 'טרם נמדד'}</span></div>`;
+      return `<div class="row between small" style="margin:6px 0"><span>${T.he}</span><span class="muted">${bl ? `התחלה: ${tv(tk, bl.value)} → אחרון: ${tv(tk, lt.value)}` : 'טרם נמדד'}</span></div>`;
     }).join('')}
     <button class="btn block" id="goMeasure">למבחנים</button>
   `, m => { m.querySelector('#goMeasure').onclick = () => { closeModal(); tab = 'measure'; render(); }; });
@@ -284,9 +292,9 @@ function activityForm(type, { date = E.today(), quest = null } = {}) {
   const v = { ...A.defaults, ...(quest?.target || {}) };
   const fields = {
     duration: `<label class="f">משך (דקות)</label><input type="number" name="duration" inputmode="numeric" min="1" max="600" value="${v.duration ?? ''}">`,
-    distance: `<label class="f">מרחק (ק״מ) — רשות</label><input type="number" name="distance" inputmode="decimal" step="0.01" min="0" value="${v.distance ?? ''}">`,
+    distance: `<label class="f">מרחק (ק״מ) — רשות</label><input type="text" name="distance" inputmode="decimal" step="0.01" min="0" value="${v.distance ?? ''}">`,
     reps: `<label class="f">מספר ספרינטים</label><input type="number" name="reps" inputmode="numeric" min="1" max="40" value="${v.reps ?? ''}">`,
-    hours: `<label class="f">שעות שינה</label><input type="number" name="hours" inputmode="decimal" step="0.25" min="0" max="16" value="${E.state.health[date]?.sleepH ?? v.hours ?? ''}">`,
+    hours: `<label class="f">שעות שינה</label><input type="text" name="hours" inputmode="decimal" step="0.25" min="0" max="16" value="${E.state.health[date]?.sleepH ?? v.hours ?? ''}">`,
     rpe: `<label class="f">מאמץ (RPE): <span class="range-val" id="rpeV">${v.rpe}</span>/10 — <span id="rpeL" class="small"></span></label><input type="range" name="rpe" min="1" max="10" step="0.5" value="${v.rpe}">`,
   };
   const journal = type === 'journal' ? `<label class="f">3 דברים טובים מהיום</label><textarea name="notes" placeholder="1.&#10;2.&#10;3."></textarea>` : '';
@@ -302,7 +310,7 @@ function activityForm(type, { date = E.today(), quest = null } = {}) {
   `, m => {
     const form = m.querySelector('#af');
     const rpeLabels = { 1: 'מנוחה', 3: 'קל מאוד', 4: 'קל', 5: 'נוח, אפשר לדבר', 6: 'בינוני', 7: 'מאתגר', 8: 'קשה', 9: 'קשה מאוד', 10: 'מקסימלי' };
-    const read = () => Object.fromEntries([...new FormData(form)].map(([k, x]) => [k, k === 'notes' ? x : x === '' ? undefined : Number(x)]));
+    const read = () => Object.fromEntries([...new FormData(form)].map(([k, x]) => [k, k === 'notes' ? x : x === '' ? undefined : num(x)]));
     const upd = () => {
       const p = read();
       if (p.rpe != null) { m.querySelector('#rpeV').textContent = p.rpe; m.querySelector('#rpeL').textContent = rpeLabels[Math.floor(p.rpe)] || ''; }
@@ -449,27 +457,74 @@ function testForm(key, date = E.today(), q = null) {
   modal(`
     <div class="win-title"><span class="badge-i">${STATS[T.stat].icon}</span><span>${esc(T.he)}</span></div>
     <p class="small">${esc(T.how)}</p>
-    ${bl ? `<p class="small muted">נקודת התחלה: ${bl.value} ${T.unit} (${bl.date})</p>` : '<p class="small warn">זו תהיה נקודת ההתחלה (Baseline) שלך.</p>'}
+    ${bl ? `<p class="small muted">נקודת התחלה: ${tv(key, bl.value)} (${bl.date})</p>` : '<p class="small warn">זו תהיה נקודת ההתחלה (Baseline) שלך.</p>'}
     <form id="tf">
-      <label class="f">תוצאה (${T.unit})</label>
-      <input type="number" name="v" inputmode="decimal" step="${T.step}" required>
+      ${key === 'sitreach' ? sitReachInputs() : `<label class="f">תוצאה (${T.unit})</label>
+      <input type="text" name="v" inputmode="decimal" required>`}
       <button class="btn block" style="margin-top:14px">שמירה ✔</button>
     </form>
     ${alt}
   `, m => {
     m.querySelector('#tf').onsubmit = e => {
       e.preventDefault();
-      const v = Number(new FormData(e.target).get('v'));
-      if (!Number.isFinite(v)) return;
+      const v = key === 'sitreach' ? readSitReach(m) : num(new FormData(e.target).get('v'));
+      if (!Number.isFinite(v)) return toast(key === 'sitreach' ? 'בחרו לאן הגעתם' : 'הזינו מספר');
       if (key === 'sprint' && v <= 0) return toast('זמן לא תקין');
       const r = E.recordTest(key, v, { date });
       if (q) E.completeQuest(date, q.id, null);
       closeModal(); render();
       showTestResult(r);
     };
+    if (key === 'sitreach') bindSitReach(m);
     const a = m.querySelector('#altVo2');
     if (a) a.onclick = () => testForm('vo2', date, q);
   });
+}
+
+// ---------- מבחן גמישות בלי מספרים שליליים ----------
+// רמות משוערות (ס״מ ביחס לאצבעות הרגליים) לאדם בגובה ממוצע
+const REACH_LEVELS = [
+  { cm: -35, he: 'עד הברכיים', ic: '🦵' },
+  { cm: -22, he: 'אמצע השוק', ic: '⬇️' },
+  { cm: -10, he: 'עד הקרסוליים', ic: '🦶' },
+  { cm: -4, he: 'כמעט נוגע באצבעות הרגליים', ic: '🤏' },
+  { cm: 0, he: 'נוגע בדיוק באצבעות הרגליים', ic: '👆' },
+  { cm: 6, he: 'האצבעות עוברות את כפות הרגליים', ic: '👉' },
+  { cm: 12, he: 'כל כף היד עוברת את כפות הרגליים', ic: '🖐️' },
+];
+function sitReachInputs() {
+  return `
+    <label class="f"><b style="color:var(--text)">לאן הגעת עם קצות האצבעות?</b></label>
+    <div class="seg" id="reachLv" style="flex-direction:column">
+      ${REACH_LEVELS.map((l, i) => `<button type="button" data-i="${i}" style="text-align:start">${l.ic} ${l.he}</button>`).join('')}
+    </div>
+    <details style="margin-top:10px"><summary>מדידה מדויקת עם סרגל (רשות)</summary>
+      <div class="seg" id="reachSide" style="margin-top:8px">
+        <button type="button" data-s="-1">לא הגעתי לאצבעות</button>
+        <button type="button" data-s="1">עברתי את האצבעות</button>
+      </div>
+      <label class="f">בכמה ס״מ?</label>
+      <input type="text" id="reachCm" inputmode="decimal" placeholder="למשל 8">
+      <p class="small muted">מודדים את המרחק בין קצות אצבעות הידיים לקצות אצבעות הרגליים.</p>
+    </details>
+    <p class="small muted">חשוב: בכל מבחן חוזר — אותה שיטה, אחרי אותו חימום.</p>`;
+}
+function bindSitReach(m) {
+  const pick = (box, attr) => box.onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    box.querySelectorAll('button').forEach(x => x.classList.remove('on')); b.classList.add('on');
+    box.dataset.val = b.dataset[attr];
+  };
+  pick(m.querySelector('#reachLv'), 'i');
+  pick(m.querySelector('#reachSide'), 's');
+}
+function readSitReach(m) {
+  const cm = num(m.querySelector('#reachCm').value);
+  const side = m.querySelector('#reachSide').dataset.val;
+  if (Number.isFinite(cm) && side) return Math.abs(cm) * Number(side);
+  if (Number.isFinite(cm) && cm === 0) return 0;
+  const i = m.querySelector('#reachLv').dataset.val;
+  return i != null ? REACH_LEVELS[+i].cm : NaN;
 }
 
 function showTestResult(r) {
@@ -478,7 +533,7 @@ function showTestResult(r) {
   modal(`
     <div class="win-title"><span class="badge-i">${S.icon}</span><span class="en">${r.baseline ? 'BASELINE SET' : 'RECALIBRATED'}</span></div>
     <div class="xp-pop en">+${r.xp} EXP</div>
-    <p class="center">${esc(T.he)}: <b>${r.value}</b> ${T.unit}</p>
+    <p class="center">${esc(T.he)}: <b>${tv(r.key, r.value)}</b></p>
     ${r.baseline ? `<p class="center muted small">נקבעה נקודת התחלה. המבחן הבא בעוד שבועיים יראה כמה באמת השתפרת.</p>` :
       `<div class="tiles">
         <div class="tile"><div class="t">המודל חזה</div><div class="n">${sgn(r.modelGain, 1)}%</div></div>
@@ -531,7 +586,7 @@ function renderMeasure() {
       const bl = S.baselines[k], lt = E.lastTest(k);
       let ch = '';
       if (bl && lt && lt.date !== bl.date) { const r = (T.toIndex(lt.value) / T.toIndex(bl.value) - 1) * 100; ch = `<span class="${r >= 0 ? 'good' : 'bad'}">${sgn(r, 1)}%</span>`; }
-      return `<button class="quest" data-test="${k}"><span><div class="qt">${STATS[T.stat].icon} ${esc(T.he)}</div><div class="qd">${bl ? `התחלה: ${bl.value} · אחרון: ${lt.value} ${T.unit} (${lt.date}) ${ch}` : 'טרם נמדד'}</div></span><span class="check">＋</span></button>`;
+      return `<button class="quest" data-test="${k}"><span><div class="qt">${STATS[T.stat].icon} ${esc(T.he)}</div><div class="qd">${bl ? `התחלה: ${tv(k, bl.value)} · אחרון: ${tv(k, lt.value)} (${lt.date}) ${ch}` : 'טרם נמדד'}</div></span><span class="check">＋</span></button>`;
     }).join('')}
   `, { icon: '⚖' })}
 
@@ -566,8 +621,8 @@ function healthSyncHTML() {
     <div id="hprog" class="small"></div>
     <details><summary>הזנה ידנית</summary>
       <form id="manH">
-        <div class="row"><div class="grow"><label class="f">צעדים</label><input type="number" name="steps" inputmode="numeric"></div><div class="grow"><label class="f">שינה (שעות)</label><input type="number" name="sleepH" step="0.1" inputmode="decimal"></div></div>
-        <div class="row"><div class="grow"><label class="f">דופק מנוחה</label><input type="number" name="rhr" inputmode="numeric"></div><div class="grow"><label class="f">VO2max</label><input type="number" name="vo2" step="0.1" inputmode="decimal"></div></div>
+        <div class="row"><div class="grow"><label class="f">צעדים</label><input type="number" name="steps" inputmode="numeric"></div><div class="grow"><label class="f">שינה (שעות)</label><input type="text" name="sleepH" step="0.1" inputmode="decimal"></div></div>
+        <div class="row"><div class="grow"><label class="f">דופק מנוחה</label><input type="number" name="rhr" inputmode="numeric"></div><div class="grow"><label class="f">VO2max</label><input type="text" name="vo2" step="0.1" inputmode="decimal"></div></div>
         <button class="btn block" style="margin-top:10px">שמירה להיום</button>
       </form>
     </details>`;
@@ -577,7 +632,7 @@ function bindHealthSync() {
   $('#manH').onsubmit = e => {
     e.preventDefault();
     const d = {};
-    for (const [k, v] of new FormData(e.target)) if (v !== '') d[k] = Number(v);
+    for (const [k, v] of new FormData(e.target)) if (v !== '' && Number.isFinite(num(v))) d[k] = num(v);
     applySync(d);
   };
   $('#hfile').onchange = async e => {
@@ -714,7 +769,7 @@ function renderSystem() {
   ${win('PLAYER', `
     <form id="pf">
       <label class="f">שם</label><input type="text" name="name" value="${esc(P.name)}" maxlength="24">
-      <div class="row"><div class="grow"><label class="f">גיל</label><input type="number" name="age" value="${P.age}"></div><div class="grow"><label class="f">משקל</label><input type="number" name="weightKg" step="0.1" value="${P.weightKg}"></div></div>
+      <div class="row"><div class="grow"><label class="f">גיל</label><input type="number" name="age" value="${P.age}"></div><div class="grow"><label class="f">משקל</label><input type="text" inputmode="decimal" name="weightKg" value="${P.weightKg}"></div></div>
       <label class="f">ציוד</label><select name="equipment"><option value="none" ${P.equipment === 'none' ? 'selected' : ''}>בלי ציוד</option><option value="gym" ${P.equipment === 'gym' ? 'selected' : ''}>חדר כושר</option></select>
       <label class="f">ימי אימון בשבוע</label><select name="daysPerWeek">${[3, 4, 5, 6].map(n => `<option ${+P.daysPerWeek === n ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <button class="btn block" style="margin-top:12px">שמירה</button>
@@ -768,7 +823,7 @@ function renderSystem() {
   $('#pf').onsubmit = e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    Object.assign(E.state.profile, { name: f.get('name') || P.name, age: +f.get('age') || P.age, weightKg: +f.get('weightKg') || P.weightKg, equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek') });
+    Object.assign(E.state.profile, { name: f.get('name') || P.name, age: +f.get('age') || P.age, weightKg: num(f.get('weightKg')) || P.weightKg, equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek') });
     E.save(); toast('נשמר ✓');
   };
   $('#exp').onclick = async () => {
