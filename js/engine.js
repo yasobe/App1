@@ -614,7 +614,7 @@ function trainingFactor(date) {
 function generateQuests(date) {
   const P = state.profile;
   const list = [];
-  const initial = !Object.keys(state.baselines).length;
+  const initial = assessment().initial;
   const days = clamp(Number(P.daysPerWeek) || 4, 3, 6);
   const dow = parseDay(date).getDay(); // 0 = ראשון
   const slot = initial ? null : TEMPLATES[days][dow];
@@ -792,7 +792,6 @@ function lastOfGroup(keys) {
 }
 // מחזיר את מצב ההערכה השבועית: אילו מבחנים מגיעים ומתי ההערכה הבאה
 export function assessment() {
-  const initial = !Object.keys(state.baselines).length;
   const items = ASSESS_GROUPS.map(g => {
     const last = lastOfGroup(g.keys);
     const key = last?.key || g.keys[0];
@@ -800,6 +799,8 @@ export function assessment() {
     return { key, alt: g.keys.filter(k => k !== key), he: g.he, optional: !!g.optional, last, due: age >= 7, doneToday: age === 0 };
   });
   const core = items.filter(i => !i.optional);
+  // בדיקה ראשונית = יש תכונת ליבה שעוד לא נמדדה אף פעם. עד שהיא מושלמת — רק היא.
+  const initial = core.some(i => !i.last);
   const due = core.some(i => i.due);
   // ההערכה הבאה: 7 ימים אחרי המבחן הישן ביותר מבין הליבה
   const ages = core.map(i => i.last ? daysBetween(i.last.date, today()) : 999);
@@ -808,6 +809,17 @@ export function assessment() {
 }
 
 // דוח: לכל מבחן — התחלה, קודם, אחרון
+export function initialPending() { return assessment().initial; }
+
+// בדיקה ראשונית מחדש: מוחק את כל המדידות (וה-EXP שלהן) ומתחיל מנקודת פתיחה חדשה
+export function redoInitial() {
+  for (const key of Object.keys(TESTS)) if (state.tests.some(t => t.key === key) || state.baselines[key]) resetBaseline(key);
+  for (const k of STAT_KEYS) { delete state.stats[k].norm; delete state.stats[k].lastCalib; }
+  state.flags ||= {};
+  delete state.flags.startShown;
+  save();
+}
+
 export function weeklyReport() {
   const out = [];
   for (const key of Object.keys(TESTS)) {
@@ -883,7 +895,7 @@ export function penaltyCheck() {
   state.lastPenaltyCheck = t;
   const day = state.quests[y];
   let res = null;
-  if (day && !day.cleared && !day.rest) {
+  if (day && !day.cleared && !day.rest && !assessment().initial) {
     const missed = day.items.filter(x => x.main && !x.done).length;
     if (missed > 0) {
       const lost = state.streak.count;
@@ -988,6 +1000,7 @@ export function specialOffer(date = today()) {
 // נקרא כשהאפליקציה פתוחה: מחזיר אירועים (הצעה חדשה / פג תוקף)
 export function specialTick(now = Date.now()) {
   const S = sp(); const t = today(); const events = [];
+  if (assessment().initial) return events; // קודם בדיקה ראשונית
   for (const [d, o] of Object.entries(S.offers)) {
     if (!o) continue;
     if ((o.status === 'active' || o.status === 'offered') && o.deadline && now > o.deadline) {

@@ -237,13 +237,15 @@ function renderStatus() {
     <div class="stats">
       ${STAT_KEYS.map(k => {
         const g = E.statGain(k);
+        const pending = !E.statNorm(k) && E.initialPending();
         return `<button class="stat" data-stat="${k}">
           <span class="ic">${STATS[k].icon}</span>
           <span class="grow"><span class="nm">${STATS[k].he}<span class="en">${k}</span>${E.statNorm(k) ? `<span class="tag">אחוזון ${E.statNorm(k).pct}${E.statNorm(k).rough ? '~' : ''}</span>` : '<span class="tag">טרם נמדד</span>'}${calibrated(k) ? '<span class="tag">✓ מכויל</span>' : ''}</span>${sparkline(k)}</span>
-          <span class="val"><div class="v" style="color:${STATS[k].color}">${E.statValue(k).toFixed(1)}</div><div class="g ${g >= 0 ? 'good' : 'bad'}">${sgn(g, 1)}%</div></span>
+          <span class="val"><div class="v" style="color:${STATS[k].color}">${pending ? '?' : E.statValue(k).toFixed(1)}</div><div class="g ${g >= 0 ? 'good' : 'bad'}">${pending ? '' : sgn(g, 1) + '%'}</div></span>
         </button>`;
       }).join('')}
     </div>
+    ${E.initialPending() ? `<button class="btn block" id="goInitial" style="margin-top:10px">⚔️ לבדיקה הראשונית — קובעת את הסטטים</button>` : ''}
     <p class="small muted center" style="margin:10px 0 0">10 = הממוצע של ${P.sex ? SEX_HE[P.sex] : 'אנשים'} בני ${bandLabel(P.age)} · האחוז = השיפור שלך מאז ההתחלה · לחצו להסבר</p>
     ${P.sex ? '' : `<div class="row" style="margin-top:8px;gap:6px"><span class="small grow">להשוואה מדויקת לממוצע — מין:</span><button class="btn ghost" data-sex="m" style="min-height:34px;padding:4px 12px">זכר</button><button class="btn ghost" data-sex="f" style="min-height:34px;padding:4px 12px">נקבה</button></div>`}
   `, { icon: '◆' })}
@@ -264,6 +266,7 @@ function renderStatus() {
   `;
   app.querySelectorAll('[data-stat]').forEach(b => b.onclick = () => statDetail(b.dataset.stat));
   $('#achBtn').onclick = achievementsModal;
+  $('#goInitial') && ($('#goInitial').onclick = () => { tab = 'quests'; render(); });
   app.querySelectorAll('[data-sex]').forEach(b => b.onclick = () => { E.state.profile.sex = b.dataset.sex; E.recomputeNorms(); render(); });
   $('#syncBtn').onclick = syncFromClipboard;
 }
@@ -347,7 +350,24 @@ function questRow(q) {
       </button>`;
 }
 
+function renderInitialGate() {
+  const A = E.assessment();
+  const core = A.items.filter(i => !i.optional);
+  const done = core.filter(i => i.last).length;
+  app.innerHTML = `
+  ${win('SYSTEM', `
+    <p class="center" style="margin-top:0">לפני שמתחילים — <b>בדיקה ראשונית</b>.</p>
+    <p class="small muted center">היא קובעת את הסטטים ההתחלתיים שלך: איפה אתה ביחס לממוצע של בני גילך ומינך (10 = ממוצע). המשימות היומיות ייפתחו מיד אחריה.</p>
+    <div class="row between small" style="margin:10px 0 4px"><span>הושלמו</span><span class="en">${done}/${core.length}</span></div>
+    <div class="bar"><i style="width:${done / core.length * 100}%"></i></div>
+    <p class="small muted" style="margin:8px 0 0">כ-25 דקות בסך הכול. מבחן הסיבולת (12 דקות ריצה) — אפשר גם בערב או מחר; או להזין VO2max מהשעון.</p>
+  `, { icon: '!' })}
+  ${assessmentWin(true)}`;
+  bindAssessment();
+}
+
 function renderQuests() {
+  if (E.initialPending()) return renderInitialGate();
   const t = E.today();
   const day = E.questsFor(t);
   const mains = day.items.filter(q => q.main);
@@ -1363,9 +1383,11 @@ function renderSystem() {
   ${win('DATA', `
     <p class="small muted">הנתונים נשמרים רק במכשיר שלך. מומלץ לגבות מדי פעם.</p>
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
+    <button class="btn ghost block" id="redoInit" style="margin-top:10px">🔁 בדיקה ראשונית מחדש</button>
+    <p class="small muted">מוחק את המדידות וקובע את הסטטים ההתחלתיים מחדש. האימונים, ההרגלים וה-EXP מאימונים נשמרים.</p>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.6</p>
+  <p class="small muted center en">ASCEND v1.7</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();
@@ -1387,6 +1409,10 @@ function renderSystem() {
       E.replaceState(s); dailyTick(); render(); toast('שוחזר ✓');
     } catch (err) { toast('שגיאה: ' + err.message); }
   };
+  $('#redoInit').onclick = () => {
+    if (!confirm('לעשות בדיקה ראשונית מחדש? כל המדידות הקיימות יימחקו, והסטטים ההתחלתיים ייקבעו לפי הבדיקה החדשה.')) return;
+    E.redoInitial(); tab = 'quests'; render(); toast('אפשר להתחיל את הבדיקה הראשונית');
+  };
   $('#rst').onclick = () => {
     if (!confirm('למחוק את כל הנתונים ולהתחיל מחדש? אי אפשר לבטל.')) return;
     E.resetAll(); renderOnboarding();
@@ -1395,7 +1421,12 @@ function renderSystem() {
 
 // =====================================================================
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // עדכון אוטומטי: כשגרסה חדשה מותקנת — טוענים מחדש פעם אחת (לא בביקור הראשון)
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('./sw.js').then(r => r.update()).catch(() => {});
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') navigator.serviceWorker.getRegistration().then(r => r?.update()).catch(() => {}); });
 }
 window.addEventListener('hashchange', () => {
   const hs = parseHashSync(location.hash);
