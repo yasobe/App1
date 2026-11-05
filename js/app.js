@@ -11,6 +11,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const num = x => { if (x == null) return NaN; const t = String(x).trim().replace(/[−–]/g, '-').replace(',', '.'); return t === '' ? NaN : Number(t); };
 // תצוגת תוצאת מבחן בשפה רגילה
 const tv = (key, v) => {
+  if (key === 'who5') return `${v}/100`;
   if (key !== 'sitreach') return `${v} ${TESTS[key].unit}`;
   if (v === 0) return 'נוגע באצבעות';
   return v < 0 ? `${Math.abs(v)} ס״מ לפני האצבעות` : `${v} ס״מ אחרי האצבעות`;
@@ -251,14 +252,16 @@ function renderQuests() {
   const mains = day.items.filter(q => q.main);
   const doneN = mains.filter(q => q.done).length;
   app.innerHTML = `
+  ${assessmentWin(false)}
   ${win('DAILY QUEST', `
+    <p class="small muted" style="margin-top:0">התוכנית שמשנה אותך: כל משימה שמושלמת מעלה את הרמה שלה, והיעד הבא קצת יותר קשה.</p>
     <div class="row between small"><span class="muted">${new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</span><span class="timer">⏳ ${timeLeft()}</span></div>
     <div class="row between small" style="margin:8px 0 4px"><span>התקדמות</span><span class="en">${doneN}/${mains.length}</span></div>
     <div class="bar"><i style="width:${doneN / mains.length * 100}%"></i></div>
     <div style="margin-top:6px">
     ${day.items.map(q => `
       <button class="quest ${q.done ? 'done' : ''}" data-q="${q.id}">
-        <span><div class="qt">${esc(q.title)}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div></span>
+        <span><div class="qt">${esc(q.title)}${q.lvl ? `<span class="tag">${q.lvl}</span>` : ''}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div></span>
         <span class="check">${q.done ? '✓' : ''}</span>
       </button>`).join('')}
     </div>
@@ -268,6 +271,7 @@ function renderQuests() {
   <p class="small muted center">פעילות שעשית מחוץ למשימות — גם היא נספרת לפי אותו מודל מחקרי.</p>
   `;
   app.querySelectorAll('[data-q]').forEach(b => b.onclick = () => openQuest(t, b.dataset.q));
+  bindAssessment();
   $('#freeAct').onclick = freeActivity;
 }
 
@@ -534,15 +538,20 @@ function showTestResult(r) {
     <div class="win-title"><span class="badge-i">${S.icon}</span><span class="en">${r.baseline ? 'BASELINE SET' : 'RECALIBRATED'}</span></div>
     <div class="xp-pop en">+${r.xp} EXP</div>
     <p class="center">${esc(T.he)}: <b>${tv(r.key, r.value)}</b></p>
-    ${r.baseline ? `<p class="center muted small">נקבעה נקודת התחלה. המבחן הבא בעוד שבועיים יראה כמה באמת השתפרת.</p>` :
+    ${r.baseline ? `<p class="center muted small">נקבעה נקודת התחלה. ההערכה של השבוע הבא תראה כמה באמת השתפרת.</p>` :
       `<div class="tiles">
         <div class="tile"><div class="t">המודל חזה</div><div class="n">${sgn(r.modelGain, 1)}%</div></div>
         <div class="tile"><div class="t">נמדד בפועל</div><div class="n ${r.measuredGain >= 0 ? 'good' : 'bad'}">${sgn(r.measuredGain, 1)}%</div></div>
         <div class="tile"><div class="t">${S.he} עכשיו</div><div class="n" style="color:${S.color}">${E.statValue(r.stat).toFixed(1)}</div></div>
       </div>
       <p class="small muted">${r.stat === 'MND' ? 'במצב נפשי — שילוב 50/50 בין המודל לשאלון (כי שאלונים רועשים יותר).' : 'במדדים פיזיים — המדידה האמיתית גוברת על המודל.'} ${r.measuredGain > r.modelGain + 2 ? 'הגבת לאימון מעל הממוצע 💪' : r.measuredGain < r.modelGain - 2 ? 'התקדמות מתחת לממוצע — בדקו שינה, תזונה ועקביות. זה נורמלי לגמרי; התגובה לאימון שונה מאוד בין אנשים.' : ''}</p>`}
-    <button class="btn block" id="ok">המשך</button>
-  `, m => { m.querySelector('#ok').onclick = closeModal; });
+    ${!E.assessment().due ? `<p class="center cleared">ההערכה הושלמה ✦</p><button class="btn block" id="rep">📈 לדוח ההתקדמות</button><div style="height:8px"></div>` : ''}
+    <button class="btn ${!E.assessment().due ? 'ghost ' : ''}block" id="ok">המשך</button>
+  `, m => {
+    m.querySelector('#ok').onclick = closeModal;
+    const rep = m.querySelector('#rep');
+    if (rep) rep.onclick = () => { closeModal(); tab = 'measure'; render(); setTimeout(() => document.querySelectorAll('.win')[2]?.scrollIntoView({ behavior: 'smooth' }), 50); };
+  });
 }
 
 function stepsForm(date, q) {
@@ -580,26 +589,53 @@ function renderMeasure() {
     ${moodChart()}
   `, { icon: '☺' })}
 
-  ${win('FITNESS TESTS', `
-    <p class="small muted">מבחנים כל שבועיים מכיילים את המודל לפי מה שקורה אצלך באמת.</p>
-    ${Object.entries(TESTS).map(([k, T]) => {
-      const bl = S.baselines[k], lt = E.lastTest(k);
-      let ch = '';
-      if (bl && lt && lt.date !== bl.date) { const r = (T.toIndex(lt.value) / T.toIndex(bl.value) - 1) * 100; ch = `<span class="${r >= 0 ? 'good' : 'bad'}">${sgn(r, 1)}%</span>`; }
-      return `<button class="quest" data-test="${k}"><span><div class="qt">${STATS[T.stat].icon} ${esc(T.he)}</div><div class="qd">${bl ? `התחלה: ${tv(k, bl.value)} · אחרון: ${tv(k, lt.value)} (${lt.date}) ${ch}` : 'טרם נמדד'}</div></span><span class="check">＋</span></button>`;
-    }).join('')}
-  `, { icon: '⚖' })}
+  ${assessmentWin(true)}
+  ${reportWin()}
 
   ${win('HEALTH SYNC', healthSyncHTML(), { icon: '♥' })}
   `;
   $('#ci').onclick = () => checkinForm(t, E.questsFor(t).items.find(q => q.kind === 'checkin' && !q.done));
   $('#w5').onclick = () => who5Form(t, E.questsFor(t).items.find(q => q.kind === 'who5' && !q.done));
-  app.querySelectorAll('[data-test]').forEach(b => b.onclick = () => {
-    const k = b.dataset.test;
-    testForm(k, t, E.questsFor(t).items.find(q => q.kind === 'test:' + k && !q.done));
-  });
+  bindAssessment();
   bindHealthSync();
 }
+
+// ---------- הערכה שבועית ----------
+function assessmentWin(full) {
+  const A = E.assessment();
+  if (!full && !A.due) return `<p class="small muted center" style="margin:0 0 12px">📏 ההערכה השבועית הבאה בעוד <b>${A.nextIn}</b> ימים — שם תראה כמה השתפרת באמת.</p>`;
+  const title = A.initial ? 'INITIAL ASSESSMENT' : 'WEEKLY ASSESSMENT';
+  const coreLeft = A.items.filter(i => !i.optional && i.due).length;
+  return win(title, `
+    <p class="small" style="margin-top:0">${A.initial
+      ? 'לפני שמתחילים — מודדים את נקודת הפתיחה שלך. כל שבוע נמדוד שוב, ונראה מה המשימות היומיות עשו לך.'
+      : A.due ? `עבר שבוע. זמן למדוד מה השתנה — ${coreLeft} מבחנים נשארו.` : `ההערכה הושלמה ✓ הבאה בעוד ${A.nextIn} ימים.`}</p>
+    ${A.items.map(i => {
+      const T = TESTS[i.key];
+      const st = i.doneToday || !i.due ? `<span class="check" style="color:var(--good);border-color:var(--good)">✓</span>` : '<span class="check">＋</span>';
+      return `<button class="quest ${!i.due ? 'done' : ''}" data-test="${i.key}"><span><div class="qt">${STATS[T.stat].icon} ${i.he}${i.optional ? '<span class="opt">רשות</span>' : ''}</div><div class="qd">${esc(T.he)}${i.last ? ` · אחרון: ${tv(i.last.key, i.last.value)} (${i.last.date})` : ''}</div></span>${st}</button>`;
+    }).join('')}
+    ${full ? `<details><summary>כל המבחנים</summary>${Object.entries(TESTS).map(([k, T]) => `<button class="quest" data-test="${k}"><span><div class="qt">${STATS[T.stat].icon} ${esc(T.he)}</div></span><span class="check">＋</span></button>`).join('')}</details>` : ''}
+  `, { icon: '⚖' });
+}
+function bindAssessment() {
+  app.querySelectorAll('[data-test]').forEach(b => b.onclick = () => {
+    const k = b.dataset.test;
+    if (k === 'who5') who5Form(E.today()); else testForm(k, E.today());
+  });
+}
+function reportRows() {
+  const R = E.weeklyReport();
+  if (!R.length) return '<p class="muted center small">עוד אין מדידות.</p>';
+  return R.map(r => {
+    const T = TESTS[r.key], S = STATS[T.stat];
+    const c = v => v == null ? '<span class="muted">—</span>' : `<b class="${v >= 0 ? 'good' : 'bad'}">${sgn(v, 1)}%</b>`;
+    return `<div class="gain-row"><div class="head"><span>${S.icon} <b>${S.he}</b> <span class="small muted">${esc(T.he)}</span></span></div>
+      <div class="small" style="margin-top:4px">התחלה: ${tv(r.key, r.first)}${r.prev ? ` · שבוע קודם: ${tv(r.key, r.prev.value)}` : ''} · עכשיו: <b>${tv(r.key, r.last.value)}</b></div>
+      <div class="row small" style="margin-top:4px;gap:16px"><span>השבוע: ${c(r.week)}</span><span>מההתחלה: ${c(r.total)}</span></div></div>`;
+  }).join('');
+}
+function reportWin() { return win('REPORT', `<p class="small muted" style="margin-top:0">שינוי אמיתי שנמדד — מההערכה הקודמת ומההתחלה.</p>${reportRows()}<p class="small muted">בכוח, האחוז הוא שינוי בכוח המשוער לפי נוסחת Epley (1RM ∝ 1 + חזרות/30), ולא במספר החזרות. בסיבולת, השינוי הוא ב-VO2max המשוער.</p>`, { icon: '↗' }); }
 
 function moodChart() {
   const t = E.today(); const W = 300, H = 70;
@@ -818,7 +854,7 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.0</p>
+  <p class="small muted center en">ASCEND v1.1</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();

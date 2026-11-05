@@ -195,6 +195,8 @@ export function recordTest(key, value, opts = {}) {
     result.newGain = statGain(k);
   }
   state.tests.push({ key, value, date, at: Date.now() });
+  // מבחן כוח חדש = עוגן חדש לחזרות, אז מאפסים את מדרגות ההתקדמות בכוח
+  if (key === 'pushups' && !result.baseline) prog().str = 0;
   result.xp = addXP(40);
   snapshot(today());
   save();
@@ -254,13 +256,16 @@ function sleepFromLog(d) {
   return e ? Number(e.params.hours) : null;
 }
 
-// ---------------- משימות יומיות ----------------
+// ---------------- משימות יומיות: תוכנית פרוגרסיבית ----------------
+// המשימה היומית = מה שגורם לשינוי. כל השלמה מעלה את רמת ההתקדמות בקטגוריה,
+// והיעד הבא קצת יותר קשה (עומס פרוגרסיבי). המבחנים נפרדים — הערכה שבועית.
 const TEMPLATES = {
   3: ['strength', null, 'cardioA', null, 'strength', 'mobilityLong', null],
   4: ['strength', 'run', null, 'strength', 'cardioB', 'mobilityLong', null],
   5: ['strength', 'run', 'cardioB', 'strength', 'runLong', 'mobilityLong', null],
   6: ['strength', 'run', 'cardioB', 'strength', 'runLong', 'mobilityLong', 'walkLong'],
 };
+const QUEST_VERSION = 2;
 
 function weekParity(date) { return Math.floor(daysBetween('2024-01-07', date) / 7) % 2; }
 
@@ -268,85 +273,140 @@ function q(kind, title, desc, extra = {}) {
   return { id: 'Q' + Math.random().toString(36).slice(2, 9), kind, title, desc, done: false, main: true, ...extra };
 }
 
+export function prog() {
+  state.prog ||= { str: 0, end: 0, spd: 0, mob: 0, mind: 0, stepsGoal: null };
+  return state.prog;
+}
+
+function initialStepsGoal() {
+  const vals = [];
+  for (let i = 1; i <= 7; i++) { const s = state.health[addDays(today(), -i)]?.steps; if (s != null) vals.push(s); }
+  if (vals.length >= 3) {
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return clamp(Math.round(avg / 500) * 500 + 500, 3000, 10000);
+  }
+  return 6000;
+}
+export function stepsGoal() {
+  const p = prog();
+  if (p.stepsGoal == null) { p.stepsGoal = initialStepsGoal(); save(); }
+  return p.stepsGoal;
+}
+
 export function questsFor(date) {
-  if (!state.quests[date]) {
-    state.quests[date] = { items: generateQuests(date), cleared: false };
+  const day = state.quests[date];
+  if (!day || day.v !== QUEST_VERSION) {
+    const items = generateQuests(date);
+    // מעבר מגרסה קודמת: שומרים מה שכבר הושלם
+    if (day) for (const it of items) { const old = day.items.find(o => o.kind === it.kind && o.done); if (old) { it.done = true; it.logId = old.logId; } }
+    state.quests[date] = { items, cleared: day?.cleared || false, v: QUEST_VERSION };
     save();
   }
   return state.quests[date];
 }
 
+// מחזיר את משימות היום לפי הרמה וההתקדמות הנוכחית
 function generateQuests(date) {
-  const L = levelInfo().level;
   const P = state.profile;
+  const p = prog();
   const list = [];
-  list.push(q('checkin', 'דיווח מצב יומי', 'דרגו מצב רוח, אנרגיה ולחץ (30 שניות).'));
-
-  // יום ראשון במערכת: מבחני הערכה
-  if (!Object.keys(state.baselines).length) {
-    list.push(q('test:pushups', 'מבחן הערכה: כוח', TESTS.pushups.how));
-    list.push(q('test:cooper', 'מבחן הערכה: סיבולת', TESTS.cooper.how + ' (אם יש לך VO2max מהשעון — אפשר להזין אותו במקום.)'));
-    list.push(q('test:sitreach', 'מבחן הערכה: גמישות', TESTS.sitreach.how));
-    list.push(q('who5', 'מבחן הערכה: מצב נפשי', 'שאלון WHO-5 — 5 שאלות על השבועיים האחרונים.'));
-    list.push(q('test:sprint', 'מבחן הערכה: מהירות (רשות)', TESTS.sprint.how, { main: false }));
-    list.push(q('sleep', 'שינה: 7–9 שעות', 'הזינו כמה ישנתם הלילה (או סנכרנו מ-Apple Health).', { target: { hours: 7.5 } }));
-    return list;
-  }
+  const initial = !Object.keys(state.baselines).length;
 
   const days = clamp(Number(P.daysPerWeek) || 4, 3, 6);
   const dow = parseDay(date).getDay(); // 0 = ראשון
-  const slot = TEMPLATES[days][dow];
+  const slot = initial ? null : TEMPLATES[days][dow];
   const parity = weekParity(date);
   const gym = P.equipment === 'gym';
+  const up = (n) => n > 0 ? `↑ רמה ${n + 1}` : 'רמה 1';
 
-  const lastPush = lastTest('pushups')?.value ?? 10;
-  const sets = 3 + (L >= 10 ? 1 : 0) + (L >= 25 ? 1 : 0);
-  const reps = Math.max(5, Math.round(lastPush * 0.6));
-  const runMin = 20 + Math.min(25, Math.floor(L * 0.8));
+  // --- כוח ---
+  const maxPush = lastTest('pushups')?.value ?? 10;
+  const baseReps = Math.max(4, Math.round(maxPush * 0.5));
+  const reps = Math.round(baseReps * (1 + 0.03 * p.str));
+  const sets = Math.min(5, 3 + Math.floor(p.str / 4));
+  // --- סיבולת / מהירות ---
+  const runMin = Math.min(60, Math.round(20 + 1.5 * p.end));
+  const intN = Math.min(10, 4 + Math.floor(p.end / 3));
+  const sprN = Math.min(10, 4 + Math.floor(p.spd / 2));
+  // --- גמישות / נפש ---
+  const mobMin = Math.min(20, 8 + Math.floor(p.mob / 2));
+  const mobLong = Math.min(40, 20 + p.mob);
+  const medMin = Math.min(20, 5 + Math.floor(p.mind / 2));
 
   const main = {
     strength: () => gym
-      ? q('strength', 'אימון כוח', `${sets + 1} תרגילים מורכבים (סקוואט/דדליפט, לחיצה, משיכה, לאנג׳ים) — ${sets}×6–10 חזרות, RPE 7–8, מנוחה 2 דק׳.`, { target: { duration: 50, rpe: 8 } })
-      : q('strength', 'אימון כוח', `${sets} סבבים: ${reps} שכיבות סמיכה · ${Math.round(reps * 1.8 + 5)} סקוואטים · ${Math.min(120, 30 + L * 2)} שנ׳ פלאנק · ${Math.max(6, Math.round(reps * 0.8))} לאנג׳ים לכל רגל. מנוחה 90 שנ׳.`, { target: { duration: 30 + sets * 3, rpe: 7 } }),
-    run: () => q('run', 'ריצה קלה', `${runMin} דק׳ בקצב שבו אפשר לדבר (אזור 2). מתחילים? הליכה-ריצה לסירוגין זה מצוין.`, { target: { duration: runMin, distance: +(runMin / 7).toFixed(1), rpe: 5 } }),
-    runLong: () => q('run', 'ריצה ארוכה', `${Math.round(runMin * 1.4)} דק׳ בקצב נוח ויציב.`, { target: { duration: Math.round(runMin * 1.4), distance: +(runMin * 1.4 / 7).toFixed(1), rpe: 6 } }),
+      ? q('strength', 'אימון כוח', `${sets + 1} תרגילים מורכבים (סקוואט/דדליפט, לחיצה, משיכה, לאנג׳ים) — ${sets}×6–10 חזרות, RPE 7–8. עומס פרוגרסיבי: הוסיפו 2.5 ק״ג או חזרה אחת לעומת האימון הקודם.`, { cat: 'str', lvl: up(p.str), target: { duration: 50, rpe: 8 } })
+      : q('strength', 'אימון כוח', `${sets} סבבים: ${reps} שכיבות סמיכה · ${Math.round(reps * 1.8 + 5)} סקוואטים · ${Math.min(120, 30 + 5 * p.str)} שנ׳ פלאנק · ${Math.max(6, Math.round(reps * 0.8))} לאנג׳ים לכל רגל. מנוחה 90 שנ׳.`, { cat: 'str', lvl: up(p.str), target: { duration: 25 + sets * 4, rpe: 7 } }),
+    run: () => q('run', 'ריצה קלה', `${runMin} דק׳ בקצב שבו אפשר לדבר (אזור 2). מתחילים? הליכה-ריצה לסירוגין זה מצוין.`, { cat: 'end', lvl: up(p.end), target: { duration: runMin, distance: +(runMin / 7).toFixed(1), rpe: 5 } }),
+    runLong: () => { const m = Math.min(80, Math.round(runMin * 1.4)); return q('run', 'ריצה ארוכה', `${m} דק׳ בקצב נוח ויציב.`, { cat: 'end', lvl: up(p.end), target: { duration: m, distance: +(m / 7).toFixed(1), rpe: 6 } }); },
     cardioA: () => parity ? main.intervals() : main.run(),
     cardioB: () => parity ? main.sprints() : main.intervals(),
-    intervals: () => {
-      const n = 4 + Math.min(6, Math.floor(L / 4));
-      return q('intervals', 'אינטרוולים', `חימום 8 דק׳, ואז ${n}× (דקה מהר מאוד / 2 דק׳ קל), שחרור 5 דק׳.`, { target: { duration: 13 + n * 3, rpe: 8 } });
-    },
-    sprints: () => {
-      const n = 4 + Math.min(6, Math.floor(L / 5));
-      return q('sprints', 'ספרינטים', `חימום 10 דק׳ + תרגילי ריצה. ${n}× ספרינט 30 מ׳ במאמץ מלא, מנוחה 2–3 דק׳ מלאה.`, { target: { reps: n, rpe: 9 } });
-    },
-    mobilityLong: () => q('mobility', 'מוביליטי ארוך / יוגה', `${20 + Math.min(15, Math.floor(L / 2))} דק׳: ירכיים, המסטרינג, כתפיים, גב עליון. החזקות של 30–60 שנ׳.`, { target: { duration: 20 + Math.min(15, Math.floor(L / 2)) } }),
+    intervals: () => q('intervals', 'אינטרוולים', `חימום 8 דק׳, ואז ${intN}× (דקה מהר מאוד / 2 דק׳ קל), שחרור 5 דק׳.`, { cat: 'end', lvl: up(p.end), target: { duration: 13 + intN * 3, rpe: 8 } }),
+    sprints: () => q('sprints', 'ספרינטים', `חימום 10 דק׳ + תרגילי ריצה. ${sprN}× ספרינט 30 מ׳ במאמץ מלא, מנוחה 2–3 דק׳ מלאה.`, { cat: 'spd', lvl: up(p.spd), target: { reps: sprN, rpe: 9 } }),
+    mobilityLong: () => q('mobility', 'מוביליטי ארוך / יוגה', `${mobLong} דק׳: ירכיים, המסטרינג, כתפיים, גב עליון. החזקות של 30–60 שנ׳.`, { cat: 'mob', lvl: up(p.mob), target: { duration: mobLong } }),
     walkLong: () => q('walk', 'הליכה ארוכה בטבע', '60 דק׳ בפארק / חוף / שביל.', { target: { duration: 60 } }),
   };
 
-  if (slot) list.push(main[slot]());
-  else list.push(q('walk', 'יום התאוששות: הליכה', '30 דק׳ הליכה, עדיף בטבע. התאוששות היא חלק מהאימון.', { target: { duration: 30 } }));
+  if (initial) list.push(q('walk', 'יום ראשון: הליכה קלה', 'היום עושים את ההערכה הראשונית (למעלה). חוץ ממנה — רק 20 דק׳ הליכה. מחר מתחיל האימון.', { target: { duration: 20 } }));
+  else if (slot) list.push(main[slot]());
+  else list.push(q('walk', 'יום התאוששות: הליכה', '30 דק׳ הליכה, עדיף בטבע. התאוששות היא חלק מהאימון — השרירים מתחזקים במנוחה.', { target: { duration: 30 } }));
 
-  if (slot !== 'mobilityLong') list.push(q('mobility', 'מוביליטי יומי', '10 דק׳ מתיחות לכל הגוף.', { target: { duration: 10 } }));
-  const medMin = Math.min(20, 5 + Math.floor(L / 3));
-  list.push(q('meditation', 'מדיטציה', `${medMin} דק׳ נשימות / קשיבות (אפשר עם אפליקציה).`, { target: { duration: medMin } }));
-  list.push(q('steps', `${stepsTarget().toLocaleString('he-IL')} צעדים`, 'מתעדכן מ-Apple Health או ידנית.', { target: { steps: stepsTarget() } }));
-  list.push(q('sleep', 'שינה: 7–9 שעות', 'כמה ישנת הלילה?', { target: { hours: 7.5 } }));
+  if (slot !== 'mobilityLong') list.push(q('mobility', 'מוביליטי יומי', `${mobMin} דק׳ מתיחות לכל הגוף.`, { cat: 'mob', lvl: up(p.mob), target: { duration: mobMin } }));
+  list.push(q('meditation', 'מדיטציה', `${medMin} דק׳ נשימות / קשיבות (אפשר עם אפליקציה).`, { cat: 'mind', lvl: up(p.mind), target: { duration: medMin } }));
+  const sg = stepsGoal();
+  list.push(q('steps', `${sg.toLocaleString('he-IL')} צעדים`, sg < 8000 ? `עולה ב-250 בכל פעם שמשלימים, עד ${stepsTarget().toLocaleString('he-IL')}+ (Paluch 2022).` : 'מתעדכן מ-Apple Health או ידנית.', { cat: 'steps', target: { steps: sg } }));
+  list.push(q('sleep', 'שינה: 7–9 שעות', 'כמה ישנת הלילה? השינה היא המקום שבו הגוף בונה את השיפור.', { target: { hours: 7.5 } }));
+  list.push(q('checkin', 'דיווח מצב (בונוס)', 'מצב רוח, אנרגיה ולחץ — 30 שניות.', { main: false }));
   list.push(q('journal', 'יומן הכרת תודה (בונוס)', 'כתבו 3 דברים טובים מהיום.', { main: false }));
-
-  // מבחני הערכה שעוד לא בוצעו — כבונוס עד שיושלמו
-  const missing = [['pushups', 'squat1rm'], ['cooper', 'vo2'], ['sitreach'], ['sprint']]
-    .filter(group => !group.some(k => state.baselines[k])).map(g => g[0]);
-  for (const k of missing.slice(0, 2)) list.push(q('test:' + k, 'מבחן הערכה: ' + TESTS[k].he, TESTS[k].how, { main: false }));
-
-  // מבחנים תקופתיים
-  if (lastTestAge('who5') >= 7) list.push(q('who5', 'שאלון WHO-5 שבועי', 'מכייל את מדד המצב הנפשי שלך.'));
-  const testable = ['pushups', 'cooper', 'sitreach', 'sprint', 'squat1rm'].filter(k => state.baselines[k]);
-  const due = testable.filter(k => lastTestAge(k) >= 14);
-  if (due.length && (slot === null || slot === 'mobilityLong')) {
-    for (const k of due.slice(0, 2)) list.push(q('test:' + k, 'מבחן כושר: ' + TESTS[k].he, TESTS[k].how + ' (מכייל את המודל לפי מדידה אמיתית)'));
-  }
   return list;
+}
+
+// ---------------- הערכה שבועית ----------------
+const ASSESS_GROUPS = [
+  { keys: ['pushups', 'squat1rm'], he: 'כוח' },
+  { keys: ['cooper', 'vo2'], he: 'סיבולת' },
+  { keys: ['sitreach'], he: 'גמישות' },
+  { keys: ['who5'], he: 'מצב נפשי' },
+  { keys: ['sprint'], he: 'מהירות', optional: true },
+];
+function lastOfGroup(keys) {
+  let best = null;
+  for (const k of keys) { const t = lastTest(k); if (t && (!best || t.at > best.at)) best = t; }
+  return best;
+}
+// מחזיר את מצב ההערכה השבועית: אילו מבחנים מגיעים ומתי ההערכה הבאה
+export function assessment() {
+  const initial = !Object.keys(state.baselines).length;
+  const items = ASSESS_GROUPS.map(g => {
+    const last = lastOfGroup(g.keys);
+    const key = last?.key || g.keys[0];
+    const age = last ? daysBetween(last.date, today()) : 999;
+    return { key, alt: g.keys.filter(k => k !== key), he: g.he, optional: !!g.optional, last, due: age >= 7, doneToday: age === 0 };
+  });
+  const core = items.filter(i => !i.optional);
+  const due = core.some(i => i.due);
+  // ההערכה הבאה: 7 ימים אחרי המבחן הישן ביותר מבין הליבה
+  const ages = core.map(i => i.last ? daysBetween(i.last.date, today()) : 999);
+  const nextIn = Math.max(0, 7 - Math.max(...ages));
+  return { initial, items, due, nextIn };
+}
+
+// דוח: לכל מבחן — התחלה, קודם, אחרון
+export function weeklyReport() {
+  const out = [];
+  for (const key of Object.keys(TESTS)) {
+    const all = state.tests.filter(t => t.key === key);
+    if (!all.length) continue;
+    const T = TESTS[key];
+    const first = state.baselines[key]?.value ?? all[0].value;
+    const last = all[all.length - 1], prev = all.length > 1 ? all[all.length - 2] : null;
+    out.push({
+      key, last, prev, first,
+      week: prev ? (T.toIndex(last.value) / T.toIndex(prev.value) - 1) * 100 : null,
+      total: (T.toIndex(last.value) / T.toIndex(first) - 1) * 100,
+    });
+  }
+  return out;
 }
 
 function lastTestAge(key) {
@@ -362,6 +422,12 @@ export function completeQuest(date, questId, logEntryOrNull) {
   qq.done = true;
   qq.logId = logEntryOrNull?.id || null;
   qq.doneAt = Date.now();
+  // עומס פרוגרסיבי: ההשלמה מעלה את היעד הבא בקטגוריה
+  if (qq.cat) {
+    const p = prog();
+    if (qq.cat === 'steps') p.stepsGoal = Math.min(10000, (p.stepsGoal || 6000) + 250);
+    else p[qq.cat] = (p[qq.cat] || 0) + 1;
+  }
   const res = { cleared: false, bonusXP: 0 };
   const mains = list.filter(x => x.main);
   if (mains.every(x => x.done) && !day.cleared) {
