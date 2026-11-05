@@ -7,6 +7,7 @@ import {
 } from './research.js';
 import { HABIT_LIBRARY, libraryItem, automaticity } from './habits.js';
 import { SPECIAL_POOL, RARITY, poolItem, seeded } from './specials.js';
+import { ACHIEVEMENTS } from './achievements.js';
 
 const STORE_KEY = 'ascend.v1';
 
@@ -202,6 +203,7 @@ function uncompleteQuest(date, questId) {
   const qq = state.quests[date]?.items.find(x => x.id === questId);
   if (!qq || !qq.done) return;
   qq.done = false; qq.logId = null; qq.doneAt = null;
+  if (qq.minimal) { qq.minimal = false; qq.noProg = qq._np; return; }
   if (qq.cat && !qq.noProg) {
     const p = prog();
     if (qq.cat === 'steps') p.stepsGoal = Math.max(3000, (p.stepsGoal || 6000) - 250);
@@ -883,3 +885,74 @@ export function reopenSpecial(specialId) {
   S.done = Math.max(0, S.done - 1);
   save();
 }
+
+// ---------------- גרסה מינימלית ליום קשה ----------------
+// סופרת כ"בוצע" לרצף, נותנת EXP חלקי, לא מקדמת רמה. השיפור מחושב לפי המנה הקטנה האמיתית.
+export const MINIMAL = {
+  strength: { he: 'סבב אחד: 5 שכיבות סמיכה, 10 סקוואטים, 20 שנ׳ פלאנק', type: 'strength', params: { duration: 3, rpe: 6 } },
+  run: { he: '5 דקות ריצה קלה או הליכה מהירה', type: 'run', params: { duration: 5, rpe: 5 } },
+  cardio: { he: '5 דקות אירובי קל', type: 'cardio', params: { duration: 5, rpe: 5 } },
+  intervals: { he: '5 דקות: 2 ספרינטים קצרים בהליכה', type: 'intervals', params: { duration: 5, rpe: 6 } },
+  sprints: { he: '2 ספרינטים קלים אחרי חימום', type: 'sprints', params: { reps: 2, rpe: 7 } },
+  mobility: { he: 'מתיחה אחת של 2 דקות', type: 'mobility', params: { duration: 2 } },
+  meditation: { he: '10 נשימות איטיות (כדקה)', type: 'meditation', params: { duration: 1 } },
+  walk: { he: '5 דקות הליכה', type: 'walk', params: { duration: 5 } },
+  steps: { he: 'לפחות 2,000 צעדים', type: null },
+};
+export function completeMinimal(date, questId) {
+  const day = questsFor(date);
+  const qq = day.items.find(x => x.id === questId);
+  const M = MINIMAL[qq?.kind];
+  if (!qq || qq.done || !M) return null;
+  qq._np = !!qq.noProg;
+  qq.minimal = true;
+  qq.noProg = true;
+  let entry = null;
+  if (M.type) {
+    const a = ACTIVITIES[M.type];
+    entry = applyActivity(M.type, M.params, { date, questId, label: `🪶 ${a.icon} ${a.he} (מינימום)`, xp: Math.round(a.xp * 0.3) });
+  } else addXP(5);
+  const res = completeQuest(date, questId, entry);
+  // בונוס יום מושלם מופחת כשהיה יום מינימום
+  if (res.cleared && res.bonusXP) { state.xp -= 25; res.bonusXP -= 25; }
+  save();
+  return { entry, ...res };
+}
+
+// ---------------- מתי ואיפה (כוונות יישום) ----------------
+// "אחרי X, ב-Y, אעשה Z" — מגדיל ביצוע בפועל (Gollwitzer & Sheeran 2006)
+export function setHabitPlan(id, when, where) {
+  const h = (state.habits || []).find(x => x.id === id);
+  if (!h) return;
+  h.plan = when || where ? { when: when || '', where: where || '' } : null;
+  save();
+}
+export function setQuestPlan(date, questId, text) {
+  const qq = questsFor(date).items.find(x => x.id === questId);
+  if (!qq) return;
+  qq.plan = text || null;
+  save();
+}
+
+// ---------------- הישגים ----------------
+export function checkAchievements() {
+  state.achievements ||= {};
+  const ctx = { state, statGain, levelInfo, habitInfo, today, addDays };
+  const fresh = [];
+  for (const a of ACHIEVEMENTS) {
+    if (state.achievements[a.id]) continue;
+    let ok = false;
+    try { ok = a.check(ctx); } catch (e) { ok = false; }
+    if (ok) {
+      state.achievements[a.id] = today();
+      if (a.xp) addXP(a.xp);
+      fresh.push(a);
+    }
+  }
+  if (fresh.length) {
+    if (!state.title) state.title = fresh[fresh.length - 1].id;
+    save();
+  }
+  return fresh;
+}
+export function setTitle(id) { state.title = id; save(); }

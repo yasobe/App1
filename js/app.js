@@ -6,6 +6,7 @@ import * as E from './engine.js';
 import { parseSyncText, parseHashSync, importHealthExport } from './health.js';
 import { HABIT_LIBRARY, HABIT_CATEGORIES, HABIT_ICONS, HABIT_MEDIAN_DAYS } from './habits.js';
 import { RARITY } from './specials.js';
+import { ACHIEVEMENTS, achievement } from './achievements.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -68,6 +69,30 @@ function showTabs() {
 function render() {
   showTabs();
   ({ status: renderStatus, quests: renderQuests, measure: renderMeasure, log: renderLog, system: renderSystem })[tab]();
+  const fresh = E.checkAchievements();
+  if (fresh.length) showAchievements(fresh);
+}
+
+function showAchievements(list) {
+  if (document.querySelector('.modal-back')) return setTimeout(() => showAchievements(list), 700);
+  E.takeMessages();
+  modal(`
+    <div class="win-title"><span class="badge-i" style="border-color:var(--warn);color:var(--warn)">🏆</span><span class="en" style="color:var(--warn)">ACHIEVEMENT${list.length > 1 ? 'S' : ''} UNLOCKED</span></div>
+    ${list.map(a => `<div class="ach got"><span class="ai">${a.icon}</span><span class="grow"><b>${a.name}</b><div class="small muted">${a.desc}</div></span>${a.xp ? `<span class="small" style="color:var(--warn)">+${a.xp}</span>` : ''}</div>`).join('')}
+    <p class="small muted center">כל הישג פותח תואר. אפשר לבחור תואר במסך הסטטוס.</p>
+    <button class="btn block" id="ok">המשך</button>
+  `, m => m.querySelector('#ok').onclick = () => { closeModal(); render(); });
+}
+
+function achievementsModal() {
+  const got = E.state.achievements || {};
+  modal(`
+    <div class="win-title"><span class="badge-i">🏆</span><span>הישגים ותארים · ${Object.keys(got).length}/${ACHIEVEMENTS.length}</span></div>
+    <p class="small muted">לחצו על הישג שנפתח כדי להציג אותו כתואר.</p>
+    ${ACHIEVEMENTS.map(a => `<button class="ach ${got[a.id] ? 'got' : 'locked'} ${E.state.title === a.id ? 'sel' : ''}" data-a="${a.id}" ${got[a.id] ? '' : 'disabled'}>
+      <span class="ai">${got[a.id] ? a.icon : '🔒'}</span><span class="grow"><b>${a.name}</b><div class="small muted">${a.desc}</div></span>
+      <span class="small muted">${got[a.id] ? (E.state.title === a.id ? '✓ תואר' : got[a.id]) : (a.xp ? `+${a.xp}` : '')}</span></button>`).join('')}
+  `, m => m.querySelectorAll('.ach.got').forEach(b => b.onclick = () => { E.setTitle(b.dataset.a); closeModal(); render(); toast('התואר עודכן'); }));
 }
 
 function win(titleEn, body, { icon = '!', titleHe = '' } = {}) {
@@ -167,10 +192,11 @@ function renderStatus() {
     <div class="hero">
       <div class="lvl"><div class="num">${li.level}</div><div class="lab en">LEVEL</div></div>
       <div class="kv">
-        <b>שם</b><span>${esc(P.name)}</span>
+        <b>שם</b><span>${esc(P.name)}${S.title && achievement(S.title) ? `<div class="title-chip">${achievement(S.title).icon} ${achievement(S.title).name}</div>` : ''}</span>
         <b>דרגה</b><span><span class="rank">${rk.r}</span> <span class="small">${rk.title}</span></span>
         <b>רצף</b><span>🔥 ${S.streak.count} ימים <span class="small muted">(שיא ${S.streak.best})</span></span>
         <b>מיוחדות</b><span>★ ${E.specialStats().done} הושלמו</span>
+        <b>הישגים</b><span><button class="link" id="achBtn" style="padding:0">🏆 ${Object.keys(S.achievements || {}).length}/${ACHIEVEMENTS.length}</button></span>
       </div>
     </div>
     <div class="row between small muted" style="margin-top:10px"><span class="en">EXP</span><span class="en">${li.into} / ${li.need}</span></div>
@@ -204,6 +230,7 @@ function renderStatus() {
   `, { icon: '♥' })}
   `;
   app.querySelectorAll('[data-stat]').forEach(b => b.onclick = () => statDetail(b.dataset.stat));
+  $('#achBtn').onclick = achievementsModal;
   $('#syncBtn').onclick = syncFromClipboard;
 }
 
@@ -265,13 +292,19 @@ function timeLeft() {
 }
 
 function questRow(q) {
+  let plan = q.plan || '';
   if (q.habitId) {
     const h = (E.state.habits || []).find(x => x.id === q.habitId);
-    if (h) { const { days, auto } = E.habitInfo(h); q = { ...q, desc: auto >= 0.95 ? `🌳 הרגל מושרש (${days} ימים)` : `${days} ימים · אוטומטיות ${Math.round(auto * 100)}%` }; }
+    if (h) {
+      const { days, auto } = E.habitInfo(h);
+      q = { ...q, desc: auto >= 0.95 ? `🌳 הרגל מושרש (${days} ימים)` : `${days} ימים · אוטומטיות ${Math.round(auto * 100)}%` };
+      if (h.plan) plan = [h.plan.when, h.plan.where].filter(Boolean).join(' · ');
+    }
   }
+  if (q.minimal) q = { ...q, desc: '🪶 גרסה מינימלית — הרצף נשמר' };
   return `
       <button class="quest ${q.done ? 'done' : ''} ${q.small ? 'small-q' : ''}" data-q="${q.id}">
-        <span><div class="qt">${esc(q.title)}${q.lvl ? `<span class="tag">${q.lvl}</span>` : ''}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div></span>
+        <span><div class="qt">${esc(q.title)}${q.lvl ? `<span class="tag">${q.lvl}</span>` : ''}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div>${plan ? `<div class="qplan">📍 ${esc(plan)}</div>` : ''}</span>
         <span class="check">${q.done ? '✓' : ''}</span>
       </button>`;
 }
@@ -453,6 +486,10 @@ function habitManager() {
     <p class="small">הדברים הקטנים שבונים את היום. <b>עדיף להתחיל ב-2–3</b> ולהוסיף כשהם נהיים אוטומטיים. פספוס של יום אחד לא מוחק את ההתקדמות (Lally 2010).</p>
     <p class="small muted">✦ = יש לו השפעה מחושבת על תכונה, לפי מחקר. לשאר — EXP ומעקב אוטומטיות.</p>
     <p class="small" id="habCount"></p>
+    ${E.activeHabits().length ? `<div class="sub-h">📍 מתי ואיפה — לכל הרגל</div>
+    <p class="small muted" style="margin:0 0 4px">"אחרי הקפה בבוקר, במטבח". תוכנית כזו מגדילה מאוד את הסיכוי שזה יקרה (Gollwitzer & Sheeran 2006).</p>
+    ${E.activeHabits().map(h => `<div class="plan-row"><span class="small">${h.icon} ${esc(h.name)}</span>
+      <div class="row" style="gap:6px"><input type="text" class="grow" data-pw="${h.id}" maxlength="40" placeholder="מתי / אחרי מה" value="${esc(h.plan?.when || '')}"><input type="text" class="grow" data-pl="${h.id}" maxlength="30" placeholder="איפה" value="${esc(h.plan?.where || '')}"></div></div>`).join('')}` : ''}
     ${Object.entries(HABIT_CATEGORIES).map(([c, he]) => `
       <div class="sub-h">${he}</div>
       <div class="seg">${HABIT_LIBRARY.filter(h => h.cat === c).map(h => `<button type="button" data-h="${h.key}" class="${on.has(h.key) ? 'on' : ''}">${h.icon} ${h.name}${h.effects ? ' ✦' : ''}</button>`).join('')}</div>`).join('')}
@@ -471,9 +508,13 @@ function habitManager() {
       const now = !b.classList.contains('on');
       b.classList.toggle('on', now);
       E.setHabit(b.dataset.h, now);
-      count();
+      habitManager();
     });
     m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { E.removeHabit(b.dataset.del); habitManager(); });
+    m.querySelectorAll('[data-pw],[data-pl]').forEach(inp => inp.onchange = () => {
+      const id = inp.dataset.pw || inp.dataset.pl;
+      E.setHabitPlan(id, m.querySelector(`[data-pw="${id}"]`).value.trim(), m.querySelector(`[data-pl="${id}"]`).value.trim());
+    });
     m.querySelector('#cAdd').onclick = () => {
       const name = m.querySelector('#cName').value.trim();
       if (!name) return toast('כתבו שם להרגל');
@@ -578,6 +619,7 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
     <div class="win-title"><span class="badge-i">${A.icon}</span><span>${esc(quest?.title || A.he)}</span></div>
     ${quest ? `<p class="small muted">${esc(quest.desc)}</p>` : ''}
     ${quest?.swappedFrom ? `<p class="small muted">הוחלף מ: ${esc(quest.swappedFrom)}</p>` : ''}
+    ${quest && !quest.special && quest.main ? `<div class="row" style="gap:6px;margin:6px 0"><span class="small">📍</span><input type="text" id="qPlan" class="grow" maxlength="60" placeholder="מתי ואיפה היום? למשל: 18:00, בפארק" value="${esc(quest.plan || '')}" style="min-height:38px;padding:6px 10px;font-size:15px"></div>` : ''}
     ${timerHTML(quest?.timer)}
     <form id="af">
       ${A.fields.map(f => fields[f]).join('')}
@@ -585,6 +627,7 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
       <div id="preview" class="calc"></div>
       <button class="btn block" style="margin-top:14px" type="submit">השלמה ✔</button>
     </form>
+    ${quest && quest.main && !quest.special && E.MINIMAL[quest.kind] ? `<button class="btn ghost block" id="minimal" style="margin-top:8px">🪶 יום קשה? גרסה מינימלית</button>` : ''}
     ${canSwap || isTraining ? `<div class="btn-row" style="margin-top:8px">
       ${canSwap ? '<button class="btn ghost" id="swap">⇄ החלפת משימה</button>' : ''}
       ${isTraining ? '<button class="btn ghost" id="pain">🩹 כואב לי</button>' : ''}
@@ -623,7 +666,31 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
       showResult(entry, clear, matched?.quest);
     };
     m.querySelector('#swap') && (m.querySelector('#swap').onclick = () => swapDialog(date, quest));
+    const qp = m.querySelector('#qPlan');
+    if (qp) qp.onchange = () => { E.setQuestPlan(date, quest.id, qp.value.trim()); quest.plan = qp.value.trim(); render(); };
+    m.querySelector('#minimal') && (m.querySelector('#minimal').onclick = () => minimalDialog(date, quest));
     m.querySelector('#pain') && (m.querySelector('#pain').onclick = () => painDialog(date, quest));
+  });
+}
+
+function minimalDialog(date, quest) {
+  const M = E.MINIMAL[quest.kind];
+  modal(`
+    <div class="win-title"><span class="badge-i">🪶</span><span>גרסה מינימלית</span></div>
+    <p>ביום קשה, משהו קטן עדיף על כלום. היום עושים רק:</p>
+    <p class="center" style="font-size:18px"><b>${esc(M.he)}</b></p>
+    <ul class="small">
+      <li>המשימה נספרת כבוצעה, <b>והרצף נשמר</b>.</li>
+      <li>EXP חלקי, והרמה של המשימה לא עולה.</li>
+      <li>השיפור בתכונות מחושב לפי מה שבאמת עשית (מנה קטנה).</li>
+    </ul>
+    <p class="small muted">הרעיון: לשמור על ההרגל של "להופיע" גם כשאין כוח. מחר חוזרים לגרסה המלאה.</p>
+    <button class="btn block" id="go">בוצע ✔</button>
+  `, m => m.querySelector('#go').onclick = () => {
+    const r = E.completeMinimal(date, quest.id);
+    closeModal(); render();
+    if (r?.entry) showResult(r.entry, r); else toast(`🪶 נשמר${r?.cleared ? ' · משימה יומית הושלמה!' : ''}`);
+    flushLevelUp();
   });
 }
 
@@ -935,7 +1002,9 @@ function stepsForm(date, q) {
     <form id="sf"><label class="f">צעדים היום</label><input type="number" name="s" inputmode="numeric" value="${cur}" required>
     <button class="btn block" style="margin-top:14px">שמירה ✔</button></form>
     <button class="btn ghost block" id="sync" style="margin-top:8px">⟳ סנכרון מהלוח</button>
+    ${q && !q.done ? '<button class="btn ghost block" id="minimal" style="margin-top:8px">🪶 יום קשה? לפחות 2,000 צעדים</button>' : ''}
   `, m => {
+    m.querySelector('#minimal') && (m.querySelector('#minimal').onclick = () => minimalDialog(date, q));
     m.querySelector('#sf').onsubmit = e => {
       e.preventDefault();
       const s = Number(new FormData(e.target).get('s'));
@@ -1228,7 +1297,7 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.3</p>
+  <p class="small muted center en">ASCEND v1.4</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();
