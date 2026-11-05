@@ -4,6 +4,7 @@ import {
 } from './research.js';
 import * as E from './engine.js';
 import { parseSyncText, parseHashSync, importHealthExport } from './health.js';
+import { HABIT_LIBRARY, HABIT_CATEGORIES, HABIT_ICONS, HABIT_MEDIAN_DAYS } from './habits.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -89,6 +90,7 @@ function modal(html, mount) {
   return back;
 }
 function closeModal() {
+  stopTimer();
   document.querySelectorAll('.modal-back').forEach(m => m.remove());
   document.body.style.overflow = '';
 }
@@ -183,6 +185,7 @@ function renderStatus() {
     <p class="small muted center" style="margin:10px 0 0">100 = נקודת הפתיחה שלך · לחצו על תכונה להסבר המחקרי</p>
   `, { icon: '◆' })}
 
+  ${habitsPanel()}
   ${win('VITALS', `
     <div class="tiles">
       <div class="tile"><div class="t">חיוניות (7 ימים)</div><div class="n">${vit.score ?? '—'}</div></div>
@@ -198,6 +201,17 @@ function renderStatus() {
   `;
   app.querySelectorAll('[data-stat]').forEach(b => b.onclick = () => statDetail(b.dataset.stat));
   $('#syncBtn').onclick = syncFromClipboard;
+}
+
+function habitsPanel() {
+  const hs = E.activeHabits();
+  if (!hs.length) return '';
+  return win('HABITS', `
+    ${hs.map(h => { const { days, auto } = E.habitInfo(h); return `
+      <div style="margin:8px 0"><div class="row between small"><span>${h.icon} ${esc(h.name)}</span><span class="muted">${auto >= 0.95 ? '🌳 מושרש' : `${days} ימים · ${Math.round(auto * 100)}%`}</span></div>
+      <div class="bar" style="height:6px"><i style="width:${(auto * 100).toFixed(1)}%;background:var(--good);box-shadow:0 0 8px var(--good)"></i></div></div>`; }).join('')}
+    <p class="small muted" style="margin:8px 0 0">אוטומטיות = כמה ההרגל קרוב לקרות בלי מחשבה. בממוצע ~${HABIT_MEDIAN_DAYS} ימים של ביצוע (Lally 2010).</p>
+  `, { icon: '✅' });
 }
 
 function lastHealth(k) {
@@ -246,38 +260,76 @@ function timeLeft() {
   return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
 }
 
+function questRow(q) {
+  if (q.habitId) {
+    const h = (E.state.habits || []).find(x => x.id === q.habitId);
+    if (h) { const { days, auto } = E.habitInfo(h); q = { ...q, desc: auto >= 0.95 ? `🌳 הרגל מושרש (${days} ימים)` : `${days} ימים · אוטומטיות ${Math.round(auto * 100)}%` }; }
+  }
+  return `
+      <button class="quest ${q.done ? 'done' : ''} ${q.small ? 'small-q' : ''}" data-q="${q.id}">
+        <span><div class="qt">${esc(q.title)}${q.lvl ? `<span class="tag">${q.lvl}</span>` : ''}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div></span>
+        <span class="check">${q.done ? '✓' : ''}</span>
+      </button>`;
+}
+
 function renderQuests() {
   const t = E.today();
   const day = E.questsFor(t);
   const mains = day.items.filter(q => q.main);
   const doneN = mains.filter(q => q.done).length;
+  const training = day.items.filter(q => q.kind !== 'habit');
+  const habits = day.items.filter(q => q.kind === 'habit');
+  const restLabel = { rest: '🛌 יום מנוחה', sick: '🤒 יום מחלה' }[day.rest];
   app.innerHTML = `
   ${assessmentWin(false)}
+  ${E.state.habits ? '' : win('NEW', `<p class="center" style="margin-top:0"><b>הדברים הקטנים</b> — מים, קריאה, סידור, שיחה עם חבר…</p><p class="small muted center">בחר/י 2–3 הרגלים יומיים. המערכת תעקוב כמה זמן לוקח להם להפוך לאוטומטיים (בממוצע 66 ימים, Lally 2010).</p><button class="btn block" id="habNew">בחירת הרגלים</button>`, { icon: '✦' })}
   ${win('DAILY QUEST', `
     <p class="small muted" style="margin-top:0">התוכנית שמשנה אותך: כל משימה שמושלמת מעלה את הרמה שלה, והיעד הבא קצת יותר קשה.</p>
+    ${(day.notes || []).map(n => `<p class="small warn" style="margin:6px 0">ⓘ ${esc(n)}</p>`).join('')}
+    ${restLabel ? `<p class="center cleared" style="margin:8px 0">${restLabel} — הרצף מוגן <button class="btn ghost" id="unrest" style="min-height:32px;padding:4px 10px;margin-inline-start:8px">ביטול</button></p>` : ''}
     <div class="row between small"><span class="muted">${new Date().toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</span><span class="timer">⏳ ${timeLeft()}</span></div>
     <div class="row between small" style="margin:8px 0 4px"><span>התקדמות</span><span class="en">${doneN}/${mains.length}</span></div>
-    <div class="bar"><i style="width:${doneN / mains.length * 100}%"></i></div>
-    <div style="margin-top:6px">
-    ${day.items.map(q => `
-      <button class="quest ${q.done ? 'done' : ''}" data-q="${q.id}">
-        <span><div class="qt">${esc(q.title)}${q.lvl ? `<span class="tag">${q.lvl}</span>` : ''}${q.main ? '' : '<span class="opt">בונוס</span>'}</div><div class="qd">${esc(q.desc)}</div></span>
-        <span class="check">${q.done ? '✓' : ''}</span>
-      </button>`).join('')}
-    </div>
-    ${day.cleared ? `<div class="sep"></div><p class="center cleared">משימה יומית הושלמה ✦ +50 EXP</p>` : `<p class="small warn center" style="margin:10px 0 0">אזהרה: אי-השלמת המשימות היומיות יאפס את הרצף.</p>`}
-  `, { icon: '!', titleHe: '' })}
-  <button class="btn block" id="freeAct">＋ תיעוד פעילות חופשית</button>
-  <p class="small muted center">פעילות שעשית מחוץ למשימות — גם היא נספרת לפי אותו מודל מחקרי.</p>
+    <div class="bar"><i style="width:${mains.length ? doneN / mains.length * 100 : 0}%"></i></div>
+    <div style="margin-top:6px">${training.filter(q => q.main).map(questRow).join('')}</div>
+    ${habits.length ? `<div class="sub-h">הרגלים יומיים <button class="link" id="habEdit">עריכה</button></div><div>${habits.map(questRow).join('')}</div>` : ''}
+    <div>${training.filter(q => !q.main).map(questRow).join('')}</div>
+    ${day.cleared ? `<div class="sep"></div><p class="center cleared">משימה יומית הושלמה ✦ +50 EXP</p>` : day.rest ? '' : `<p class="small warn center" style="margin:10px 0 0">אזהרה: אי-השלמת המשימות היומיות יאפס את הרצף.</p>`}
+  `, { icon: '!' })}
+  <div class="btn-row">
+    <button class="btn" id="freeAct">＋ פעילות חופשית</button>
+    <button class="btn ghost" id="habBtn">✅ הרגלים</button>
+  </div>
+  ${day.rest || day.cleared ? '' : `<button class="btn ghost block" id="restBtn" style="margin-top:8px">🛌 יום מנוחה / מחלה</button>`}
   `;
   app.querySelectorAll('[data-q]').forEach(b => b.onclick = () => openQuest(t, b.dataset.q));
   bindAssessment();
   $('#freeAct').onclick = freeActivity;
+  $('#habBtn').onclick = habitManager;
+  $('#habNew') && ($('#habNew').onclick = habitManager);
+  $('#habEdit') && ($('#habEdit').onclick = habitManager);
+  $('#restBtn') && ($('#restBtn').onclick = () => restDialog(t));
+  $('#unrest') && ($('#unrest').onclick = () => { E.unmarkRest(t); render(); });
+}
+
+function restDialog(date) {
+  const used = E.restUsedThisWeek(date);
+  modal(`
+    <div class="win-title"><span class="badge-i">🛌</span><span>יום מנוחה / מחלה</span></div>
+    <p class="small">מנוחה היא חלק מהאימון. יום כזה <b>שומר על הרצף</b> — בלי בונוס EXP.</p>
+    <button class="btn block" id="rest" ${used && used !== date ? 'disabled style="opacity:.5"' : ''}>🛌 יום מנוחה ${used && used !== date ? '(כבר נוצל השבוע)' : '(אחד בשבוע)'}</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost block" id="sick">🤒 אני חולה</button>
+    <p class="small muted">בזמן מחלה עם חום או תסמינים מתחת לצוואר — לא מתאמנים. הליכה קלה ושינה הן המשימה.</p>
+  `, m => {
+    m.querySelector('#rest').onclick = () => { const r = E.markRest(date, 'rest'); closeModal(); render(); toast(r.ok ? 'יום מנוחה ✓ הרצף מוגן' : r.reason); };
+    m.querySelector('#sick').onclick = () => { E.markRest(date, 'sick'); closeModal(); render(); toast('החלמה מהירה. הרצף מוגן 🤒'); };
+  });
 }
 
 function openQuest(date, id) {
   const q = E.questsFor(date).items.find(x => x.id === id);
   if (!q) return;
+  if (q.kind === 'habit') return toggleHabit(date, q);
   if (q.done) {
     const entry = q.logId && E.state.log.find(l => l.id === q.logId);
     if (entry) showResult(entry); else toast('המשימה כבר הושלמה ✓');
@@ -290,27 +342,166 @@ function openQuest(date, id) {
   activityForm(q.kind, { date, quest: q });
 }
 
+// ---------- הרגלים ----------
+function toggleHabit(date, q) {
+  if (q.done) {
+    if (q.logId) E.deleteEntry(q.logId); else { q.done = false; E.save(); }
+    render(); toast('בוטל');
+    return;
+  }
+  const r = E.completeHabit(date, q.id);
+  render();
+  if (!r) return;
+  const msg = r.rooted ? `🌳 ההרגל הושרש! +150 EXP` : `✓ יום ${r.days} · אוטומטיות ${Math.round(r.auto * 100)}% · +${r.entry.xp} EXP${Object.keys(r.entry.gains).length ? ' · ' + Object.entries(r.entry.gains).map(([k, v]) => `${STATS[k].he} +${v.toFixed(2)}%`).join(', ') : ''}`;
+  toast(r.cleared ? msg + ' · משימה יומית הושלמה! +50' : msg);
+  flushLevelUp();
+}
+
+function habitManager() {
+  E.state.habits ||= [];
+  const on = new Set(E.activeHabits().map(h => h.key));
+  const custom = E.activeHabits().filter(h => h.key === 'custom');
+  modal(`
+    <div class="win-title"><span class="badge-i">✅</span><span>הרגלים יומיים</span></div>
+    <p class="small">הדברים הקטנים שבונים את היום. <b>עדיף להתחיל ב-2–3</b> ולהוסיף כשהם נהיים אוטומטיים. פספוס של יום אחד לא מוחק את ההתקדמות (Lally 2010).</p>
+    <p class="small muted">✦ = יש לו השפעה מחושבת על תכונה, לפי מחקר. לשאר — EXP ומעקב אוטומטיות.</p>
+    <p class="small" id="habCount"></p>
+    ${Object.entries(HABIT_CATEGORIES).map(([c, he]) => `
+      <div class="sub-h">${he}</div>
+      <div class="seg">${HABIT_LIBRARY.filter(h => h.cat === c).map(h => `<button type="button" data-h="${h.key}" class="${on.has(h.key) ? 'on' : ''}">${h.icon} ${h.name}${h.effects ? ' ✦' : ''}</button>`).join('')}</div>`).join('')}
+    <div class="sub-h">משלך</div>
+    ${custom.map(h => `<div class="row between small" style="margin:6px 0"><span>${h.icon} ${esc(h.name)}</span><button class="btn ghost" data-del="${h.id}" style="min-height:32px;padding:4px 10px">הסרה</button></div>`).join('')}
+    <div class="row" style="gap:6px">
+      <select id="cIcon" style="width:72px">${HABIT_ICONS.map(i => `<option>${i}</option>`).join('')}</select>
+      <input type="text" id="cName" maxlength="40" placeholder="למשל: להשקות עציצים" class="grow">
+    </div>
+    <button class="btn ghost block" id="cAdd" style="margin-top:8px">＋ הוספת הרגל משלי</button>
+    <button class="btn block" id="done" style="margin-top:12px">סיום</button>
+  `, m => {
+    const count = () => { const n = E.activeHabits().length; m.querySelector('#habCount').innerHTML = `נבחרו: <b>${n}</b>${n > 5 ? ' <span class="warn">— הרבה בבת אחת. כל הרגל שלא בוצע פוגע ברצף.</span>' : ''}`; };
+    count();
+    m.querySelectorAll('[data-h]').forEach(b => b.onclick = () => {
+      const now = !b.classList.contains('on');
+      b.classList.toggle('on', now);
+      E.setHabit(b.dataset.h, now);
+      count();
+    });
+    m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => { E.removeHabit(b.dataset.del); habitManager(); });
+    m.querySelector('#cAdd').onclick = () => {
+      const name = m.querySelector('#cName').value.trim();
+      if (!name) return toast('כתבו שם להרגל');
+      E.addCustomHabit(name, m.querySelector('#cIcon').value);
+      habitManager();
+    };
+    m.querySelector('#done').onclick = () => { closeModal(); render(); };
+  });
+}
+
+// ---------- טיימר ----------
+let audioCtx = null;
+let activeTimer = null;
+function beep(freq = 880, dur = 0.18, times = 1) {
+  try {
+    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    for (let i = 0; i < times; i++) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      const t0 = audioCtx.currentTime + i * (dur + 0.12);
+      o.frequency.value = freq; o.type = 'sine';
+      g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.3, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g).connect(audioCtx.destination); o.start(t0); o.stop(t0 + dur + 0.05);
+    }
+  } catch (e) { /* אין שמע */ }
+  try { navigator.vibrate?.(200); } catch (e) { /* */ }
+}
+const mmss = s => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, '0')}`;
+
+function stopTimer() {
+  if (activeTimer) { clearInterval(activeTimer.h); activeTimer.lock?.release?.().catch(() => {}); activeTimer = null; }
+}
+
+function timerHTML(t) {
+  if (!t) return '';
+  const btns = [];
+  if (t.countdown) btns.push(`<button type="button" class="btn" data-tm="main">▶ טיימר ${t.countdown} דק׳</button>`);
+  if (t.intervals) btns.push(`<button type="button" class="btn" data-tm="main">▶ טיימר אינטרוולים</button>`);
+  if (t.hold) btns.push(`<button type="button" class="btn ghost" data-tm="hold">פלאנק ${t.hold} שנ׳</button>`);
+  if (t.rest) btns.push(`<button type="button" class="btn ghost" data-tm="rest">מנוחה ${t.rest} שנ׳</button>`);
+  return `<div class="timer-box"><div class="tm-phase small muted" id="tmPhase">טיימר</div><div class="tm-big en" id="tmBig">—</div><div class="btn-row">${btns.join('')}</div><button type="button" class="btn ghost block hidden" id="tmStop" style="margin-top:6px">⏹ עצירה</button></div>`;
+}
+
+// מבוסס חותמות זמן — ממשיך נכון גם אחרי נעילת מסך
+function bindTimer(m, t, form) {
+  if (!t) return;
+  const big = m.querySelector('#tmBig'), phase = m.querySelector('#tmPhase'), stop = m.querySelector('#tmStop');
+  const run = (phases, onEnd) => {
+    stopTimer();
+    beep(660, 0.12);
+    const start = Date.now();
+    const total = phases.reduce((a, p) => a + p.s, 0);
+    let lastIdx = -1;
+    activeTimer = { start, h: null };
+    navigator.wakeLock?.request('screen').then(l => { if (activeTimer) activeTimer.lock = l; }).catch(() => {});
+    stop.classList.remove('hidden');
+    const tick = () => {
+      const el = (Date.now() - start) / 1000;
+      if (el >= total) {
+        big.textContent = '✓'; phase.textContent = 'הסתיים';
+        beep(990, 0.25, 3); stopTimer(); stop.classList.add('hidden'); onEnd?.(el);
+        return;
+      }
+      let acc = 0, idx = 0;
+      while (acc + phases[idx].s <= el) { acc += phases[idx].s; idx++; }
+      if (idx !== lastIdx) { if (lastIdx >= 0) beep(phases[idx].hi ? 990 : 520, 0.2, 2); lastIdx = idx; }
+      big.textContent = mmss(phases[idx].s - (el - acc));
+      phase.textContent = phases[idx].label;
+    };
+    tick();
+    activeTimer.h = setInterval(tick, 250);
+    stop.onclick = () => { const el = (Date.now() - start) / 1000; stopTimer(); stop.classList.add('hidden'); phase.textContent = 'נעצר'; onEnd?.(el, true); };
+  };
+  const fillDuration = (sec) => { const f = form.querySelector('[name=duration]'); if (f && sec >= 60) { f.value = Math.round(sec / 60); form.dispatchEvent(new Event('input')); } };
+  m.querySelectorAll('[data-tm]').forEach(b => b.onclick = () => {
+    const k = b.dataset.tm;
+    if (k === 'rest') return run([{ s: t.rest, label: 'מנוחה' }]);
+    if (k === 'hold') return run([{ s: 5, label: 'היכונו…' }, { s: t.hold, label: 'החזיקו!', hi: true }]);
+    if (t.countdown) return run([{ s: t.countdown * 60, label: 'עובדים' }], fillDuration);
+    const I = t.intervals, ph = [{ s: I.warm, label: 'חימום' }];
+    for (let i = 1; i <= I.n; i++) { ph.push({ s: I.work, label: `מהר! ${i}/${I.n}`, hi: true }); ph.push({ s: I.rest, label: `קל ${i}/${I.n}` }); }
+    ph.push({ s: I.cool, label: 'שחרור' });
+    run(ph, fillDuration);
+  });
+}
+
 // ---------- טופס פעילות ----------
-function activityForm(type, { date = E.today(), quest = null } = {}) {
+function activityForm(type, { date = E.today(), quest = null, prefill = null } = {}) {
   const A = ACTIVITIES[type];
-  const v = { ...A.defaults, ...(quest?.target || {}) };
+  const v = { ...A.defaults, ...(quest?.target || {}), ...(prefill || {}) };
   const fields = {
     duration: `<label class="f">משך (דקות)</label><input type="number" name="duration" inputmode="numeric" min="1" max="600" value="${v.duration ?? ''}">`,
-    distance: `<label class="f">מרחק (ק״מ) — רשות</label><input type="text" name="distance" inputmode="decimal" step="0.01" min="0" value="${v.distance ?? ''}">`,
+    distance: `<label class="f">מרחק (ק״מ) — רשות</label><input type="text" name="distance" inputmode="decimal" value="${v.distance ?? ''}">`,
     reps: `<label class="f">מספר ספרינטים</label><input type="number" name="reps" inputmode="numeric" min="1" max="40" value="${v.reps ?? ''}">`,
-    hours: `<label class="f">שעות שינה</label><input type="text" name="hours" inputmode="decimal" step="0.25" min="0" max="16" value="${E.state.health[date]?.sleepH ?? v.hours ?? ''}">`,
+    hours: `<label class="f">שעות שינה</label><input type="text" name="hours" inputmode="decimal" value="${E.state.health[date]?.sleepH ?? v.hours ?? ''}">`,
     rpe: `<label class="f">מאמץ (RPE): <span class="range-val" id="rpeV">${v.rpe}</span>/10 — <span id="rpeL" class="small"></span></label><input type="range" name="rpe" min="1" max="10" step="0.5" value="${v.rpe}">`,
   };
-  const journal = type === 'journal' ? `<label class="f">3 דברים טובים מהיום</label><textarea name="notes" placeholder="1.&#10;2.&#10;3."></textarea>` : '';
+  const journal = type === 'journal' ? `<label class="f">3 דברים טובים מהיום</label><textarea name="notes" placeholder="1.&#10;2.&#10;3.">${esc(v.notes || '')}</textarea>` : '';
+  const canSwap = quest && E.SWAP_OPTIONS[quest.kind];
+  const isTraining = quest && ['str', 'end', 'spd'].includes(quest.cat);
   modal(`
     <div class="win-title"><span class="badge-i">${A.icon}</span><span>${esc(quest?.title || A.he)}</span></div>
     ${quest ? `<p class="small muted">${esc(quest.desc)}</p>` : ''}
+    ${quest?.swappedFrom ? `<p class="small muted">הוחלף מ: ${esc(quest.swappedFrom)}</p>` : ''}
+    ${timerHTML(quest?.timer)}
     <form id="af">
       ${A.fields.map(f => fields[f]).join('')}
       ${journal}
       <div id="preview" class="calc"></div>
       <button class="btn block" style="margin-top:14px" type="submit">השלמה ✔</button>
     </form>
+    ${canSwap || isTraining ? `<div class="btn-row" style="margin-top:8px">
+      ${canSwap ? '<button class="btn ghost" id="swap">⇄ החלפת משימה</button>' : ''}
+      ${isTraining ? '<button class="btn ghost" id="pain">🩹 כואב לי</button>' : ''}
+    </div>` : ''}
   `, m => {
     const form = m.querySelector('#af');
     const rpeLabels = { 1: 'מנוחה', 3: 'קל מאוד', 4: 'קל', 5: 'נוח, אפשר לדבר', 6: 'בינוני', 7: 'מאתגר', 8: 'קשה', 9: 'קשה מאוד', 10: 'מקסימלי' };
@@ -322,44 +513,81 @@ function activityForm(type, { date = E.today(), quest = null } = {}) {
       m.querySelector('#preview').innerHTML = `מנה: <b>${dose.toFixed(2)}</b> × אימון סטנדרטי <span class="muted">(${esc(parts)})</span>`;
     };
     form.oninput = upd; upd();
+    bindTimer(m, quest?.timer, form);
     form.onsubmit = e => {
       e.preventDefault();
       const p = read();
       if (A.fields.includes('duration') && !(p.duration > 0)) return toast('הזינו משך');
       if (type === 'sleep' && !(p.hours >= 0)) return toast('הזינו שעות שינה');
+      stopTimer();
       const entry = E.applyActivity(type, p, { date, questId: quest?.id, questMain: quest?.main });
-      let clear = null;
+      let clear = null, matched = null;
       if (quest) clear = E.completeQuest(date, quest.id, entry);
+      else { matched = E.completeMatching(date, type, entry); clear = matched; }
+      if (type === 'sleep') E.adjustForReadiness(date);
       closeModal();
       render();
-      showResult(entry, clear);
+      showResult(entry, clear, matched?.quest);
     };
+    m.querySelector('#swap') && (m.querySelector('#swap').onclick = () => swapDialog(date, quest));
+    m.querySelector('#pain') && (m.querySelector('#pain').onclick = () => painDialog(date, quest));
   });
+}
+
+function swapDialog(date, quest) {
+  const opts = E.SWAP_OPTIONS[quest.kind] || [];
+  modal(`
+    <div class="win-title"><span class="badge-i">⇄</span><span>החלפת משימה</span></div>
+    <p class="small muted">אין זמן, מזג אוויר, אין ציוד? בחרו חלופה. היא נספרת באותה צורה.</p>
+    <div class="seg" style="flex-direction:column">${opts.map(k => `<button data-k="${k}" style="text-align:start">${E.SWAP_LABELS[k]}</button>`).join('')}</div>
+  `, m => m.querySelectorAll('[data-k]').forEach(b => b.onclick = () => {
+    const nq = E.swapQuest(date, quest.id, b.dataset.k);
+    closeModal(); render();
+    if (nq) activityForm(nq.kind, { date, quest: nq });
+  }));
+}
+
+function painDialog(date, quest) {
+  const areas = ['ברך', 'גב תחתון', 'כתף', 'קרסול / כף רגל', 'ירך', 'מרפק / שורש כף יד', 'אחר'];
+  modal(`
+    <div class="win-title"><span class="badge-i">🩹</span><span>כואב לי</span></div>
+    <p class="small">איפה? האימון של היום יוחלף בהתאוששות, ו-3 הימים הבאים יהיו בעומס מופחת. ההתקדמות שלך נשמרת.</p>
+    <div class="seg">${areas.map(a => `<button data-a="${a}">${a}</button>`).join('')}</div>
+    <p class="small warn" style="margin-top:12px">כאב חד, נפיחות, כאב בלילה או כאב שלא עובר אחרי כמה ימים — לפנות לרופא או לפיזיותרפיסט.</p>
+  `, m => m.querySelectorAll('[data-a]').forEach(b => b.onclick = () => {
+    E.reportPain(date, quest.id, b.dataset.a);
+    closeModal(); render(); toast('עודכן: התאוששות היום, עומס מופחת ל-3 ימים');
+  }));
 }
 
 function freeActivity() {
   modal(`
     <div class="win-title"><span class="badge-i">＋</span><span>תיעוד פעילות</span></div>
+    <p class="small muted">אם יש משימה פתוחה מאותו סוג היום — היא תסומן כהושלמה.</p>
     <div class="seg" style="flex-direction:column">
-      ${Object.entries(ACTIVITIES).map(([k, a]) => `<button data-t="${k}" style="text-align:start">${a.icon} ${a.he}</button>`).join('')}
+      ${Object.entries(ACTIVITIES).filter(([k]) => k !== 'habit').map(([k, a]) => `<button data-t="${k}" style="text-align:start">${a.icon} ${a.he}</button>`).join('')}
     </div>
   `, m => m.querySelectorAll('[data-t]').forEach(b => b.onclick = () => activityForm(b.dataset.t)));
 }
 
 // ---------- חלון תוצאה ----------
-function showResult(entry, clear = null) {
+function entryTitle(e) { const A = ACTIVITIES[e.type]; return e.label || `${A.icon} ${A.he}`; }
+
+function showResult(entry, clear = null, matchedQuest = null) {
   const A = ACTIVITIES[entry.type];
   const msgs = E.takeMessages();
   const lvl = msgs.find(m => m.kind === 'levelup');
   const pace = entry.params.distance > 0 && entry.params.duration > 0 ? entry.params.duration / entry.params.distance : null;
+  const typeName = entry.label || A.he;
   modal(`
     <div class="win-title"><span class="badge-i">!</span><span class="en">${entry.questId ? 'QUEST COMPLETE' : 'ACTIVITY LOGGED'}</span></div>
     ${lvl ? `<div class="lvlup en">LEVEL UP!</div><p class="center">רמה <b>${lvl.level}</b> · דרגה <span class="rank">${lvl.rank}</span></p>` : ''}
     <div class="xp-pop en">+${entry.xp + (clear?.bonusXP || 0)} EXP</div>
     ${clear?.cleared ? '<p class="center cleared">כל המשימות היומיות הושלמו! +50 בונוס</p>' : ''}
-    <p class="center">${A.icon} ${A.he} · <span class="muted small">${entry.source !== 'manual' ? esc(entry.source) + ' · ' : ''}${entry.date}</span></p>
+    ${matchedQuest ? `<p class="center small good">✓ נספר כמשימה "${esc(matchedQuest.title)}"</p>` : ''}
+    <p class="center">${esc(entryTitle(entry))} · <span class="muted small">${entry.source !== 'manual' ? esc(entry.source) + ' · ' : ''}${entry.date}</span></p>
     ${pace ? `<p class="center small">קצב: <b class="en">${Math.floor(pace)}:${String(Math.round(pace % 1 * 60)).padStart(2, '0')}</b> דק׳/ק״מ</p>` : ''}
-    <p class="small muted">המנה שלך: <b>${entry.dose.toFixed(2)}</b> × אימון סטנדרטי (${esc(entry.doseParts)})</p>
+    ${entry.type !== 'habit' ? `<p class="small muted">המנה שלך: <b>${entry.dose.toFixed(2)}</b> × אימון סטנדרטי (${esc(entry.doseParts)})</p>` : ''}
     ${entry.details.map(d => {
       const S = STATS[d.k];
       return `<div class="gain-row">
@@ -368,16 +596,34 @@ function showResult(entry, clear = null) {
           <ol>
             <li>${S.basis}</li>
             <li>במיקום שלך על העקומה (${(clamp(d.progress, 0, 1) * 100).toFixed(0)}% מהתקרה), אימון סטנדרטי (${S.std}) שווה עכשיו <b>+${d.perStd.toFixed(3)}%</b>.</li>
-            <li>משקל ההשפעה של ${A.he} על ${S.he}: <b>×${d.weight}</b>${d.repeat ? ' · גירוי חוזר באותו יום: <b>×0.5</b>' : ''} → מנה אפקטיבית ${d.dose.toFixed(2)}.</li>
+            <li>משקל ההשפעה של ${esc(typeName)} על ${S.he}: <b>×${d.weight}</b>${d.repeat ? ' · גירוי חוזר באותו יום: <b>×0.5</b>' : ''} → מנה אפקטיבית ${d.dose.toFixed(2)}.</li>
             <li>תוצאה: <b class="good">+${d.delta.toFixed(3)}%</b> → סה״כ ${E.statValue(d.k).toFixed(1)} (${sgn(E.statGain(d.k), 2)}% מההתחלה).</li>
           </ol>
         </div>
       </div>`;
     }).join('')}
-    ${A.note ? `<p class="small muted">${A.note}</p>` : ''}
-    <p class="small muted">⚠️ אלו הערכות לפי ממוצעים במחקרים; התגובה האישית משתנה מאוד בין אנשים. מבחני הכושר התקופתיים מכיילים את המספרים לפי המציאות שלך.</p>
+    ${entry.type === 'habit' && !entry.details.length ? '<p class="small muted">להרגל הזה אין השפעה מחושבת על תכונה — הוא בונה משמעת, EXP ואוטומטיות.</p>' : ''}
+    ${entry.note || A.note ? `<p class="small muted">${esc(entry.note || A.note)}</p>` : ''}
+    ${entry.type !== 'habit' ? '<p class="small muted">⚠️ אלו הערכות לפי ממוצעים במחקרים; התגובה האישית משתנה מאוד בין אנשים. ההערכה השבועית מכיילת את המספרים לפי המציאות שלך.</p>' : ''}
     <button class="btn block" id="ok">המשך</button>
-  `, m => { m.querySelector('#ok').onclick = closeModal; });
+    <div class="btn-row" style="margin-top:8px">
+      ${entry.type !== 'habit' ? '<button class="btn ghost" id="edit">✎ עריכה</button>' : ''}
+      <button class="btn danger" id="del">🗑 מחיקה</button>
+    </div>
+  `, m => {
+    m.querySelector('#ok').onclick = closeModal;
+    m.querySelector('#del').onclick = () => {
+      if (!confirm('למחוק את הפעילות? השיפור וה-EXP שלה יבוטלו, והמשימה תחזור להיות פתוחה.')) return;
+      E.deleteEntry(entry.id); closeModal(); render(); toast('נמחק');
+    };
+    const ed = m.querySelector('#edit');
+    if (ed) ed.onclick = () => {
+      const quest = entry.questId ? E.state.quests[entry.date]?.items.find(x => x.id === entry.questId) : null;
+      E.deleteEntry(entry.id);
+      render();
+      activityForm(entry.type, { date: entry.date, quest: quest && !quest.done ? quest : null, prefill: entry.params });
+    };
+  });
 }
 
 function showPenalty(p) {
@@ -409,8 +655,9 @@ function checkinForm(date, q) {
       const d = new FormData(f);
       const xp = E.saveCheckin(date, { mood: +d.get('mood'), energy: +d.get('energy'), stress: +d.get('stress'), note: d.get('note') });
       const clear = q ? E.completeQuest(date, q.id, null) : null;
+      const adj = E.adjustForReadiness(date);
       closeModal(); render();
-      toast(`נשמר ✓ ${xp ? `+${xp} EXP` : ''}${clear?.cleared ? ' · משימה יומית הושלמה! +50' : ''}`);
+      toast(adj ? 'נשמר ✓ האימון של היום הוקל לפי המצב שלך' : `נשמר ✓ ${xp ? `+${xp} EXP` : ''}${clear?.cleared ? ' · משימה יומית הושלמה! +50' : ''}`);
       flushLevelUp();
     };
   });
@@ -419,7 +666,13 @@ function checkinForm(date, q) {
 function flushLevelUp() {
   const msgs = E.takeMessages();
   const l = msgs.filter(m => m.kind === 'levelup').pop();
-  if (l) setTimeout(() => modal(`<div class="lvlup en" style="margin-top:20px">LEVEL UP!</div><p class="center">רמה <b>${l.level}</b> · דרגה <span class="rank">${l.rank}</span></p><button class="btn block" id="ok">המשך</button>`, m => m.querySelector('#ok').onclick = closeModal), 300);
+  if (!l) return;
+  // לא לסגור חלון שהמשתמש באמצע למלא — מחכים שייסגר
+  const show = () => {
+    if (document.querySelector('.modal-back')) return setTimeout(show, 600);
+    modal(`<div class="lvlup en" style="margin-top:20px">LEVEL UP!</div><p class="center">רמה <b>${l.level}</b> · דרגה <span class="rank">${l.rank}</span></p><button class="btn block" id="ok">המשך</button>`, m => m.querySelector('#ok').onclick = closeModal);
+  };
+  setTimeout(show, 300);
 }
 
 // ---------- WHO-5 ----------
@@ -468,7 +721,9 @@ function testForm(key, date = E.today(), q = null) {
       <button class="btn block" style="margin-top:14px">שמירה ✔</button>
     </form>
     ${alt}
+    ${testHistoryHTML(key)}
   `, m => {
+    bindTestHistory(m, key, date, q);
     m.querySelector('#tf').onsubmit = e => {
       e.preventDefault();
       const v = key === 'sitreach' ? readSitReach(m) : num(new FormData(e.target).get('v'));
@@ -483,6 +738,30 @@ function testForm(key, date = E.today(), q = null) {
     const a = m.querySelector('#altVo2');
     if (a) a.onclick = () => testForm('vo2', date, q);
   });
+}
+
+// היסטוריית מדידות + מחיקה / איפוס נקודת התחלה
+function testHistoryHTML(key) {
+  const list = E.state.tests.filter(t => t.key === key);
+  if (!list.length) return '';
+  return `<details style="margin-top:12px"><summary>מדידות קודמות (${list.length}) — תיקון טעויות</summary>
+    ${list.map((t, i) => `<div class="row between small" style="margin:6px 0"><span>${i === 0 ? '⚑ ' : ''}${t.date} · ${tv(key, t.value)}</span><button type="button" class="btn ghost" data-tdel="${t.at}" style="min-height:32px;padding:4px 10px">מחיקה</button></div>`).join('')}
+    <button type="button" class="btn danger block" id="tReset" style="margin-top:6px">איפוס נקודת ההתחלה</button>
+    <p class="small muted">⚑ = נקודת ההתחלה. מחיקה שלה מאפסת את המבחן, והמדידה הבאה תהיה ההתחלה החדשה.</p>
+  </details>`;
+}
+function bindTestHistory(m, key, date, q) {
+  m.querySelectorAll('[data-tdel]').forEach(b => b.onclick = () => {
+    const at = Number(b.dataset.tdel);
+    const isFirst = E.state.tests.find(t => t.key === key)?.at === at;
+    if (!confirm(isFirst ? 'זו נקודת ההתחלה. מחיקה תמחק את כל המדידות של המבחן הזה ותאפס אותו. להמשיך?' : 'למחוק את המדידה?')) return;
+    E.deleteTest(at); render(); testForm(key, date, q); toast('נמחק');
+  });
+  const r = m.querySelector('#tReset');
+  if (r) r.onclick = () => {
+    if (!confirm('לאפס את נקודת ההתחלה? כל המדידות של המבחן הזה יימחקו, והמדידה הבאה תהיה ההתחלה החדשה.')) return;
+    E.resetBaseline(key); render(); testForm(key, date, q); toast('אופס — המדידה הבאה תהיה נקודת ההתחלה');
+  };
 }
 
 // ---------- מבחן גמישות בלי מספרים שליליים ----------
@@ -609,7 +888,7 @@ function assessmentWin(full) {
   return win(title, `
     <p class="small" style="margin-top:0">${A.initial
       ? 'לפני שמתחילים — מודדים את נקודת הפתיחה שלך. כל שבוע נמדוד שוב, ונראה מה המשימות היומיות עשו לך.'
-      : A.due ? `עבר שבוע. זמן למדוד מה השתנה — ${coreLeft} מבחנים נשארו.` : `ההערכה הושלמה ✓ הבאה בעוד ${A.nextIn} ימים.`}</p>
+      : A.due ? (A.items.some(i => !i.optional && !i.last) ? `נשארו ${coreLeft} מבחנים להשלמת ההערכה.` : `עבר שבוע. זמן למדוד מה השתנה — ${coreLeft} מבחנים נשארו.`) : `ההערכה הושלמה ✓ הבאה בעוד ${A.nextIn} ימים.`}</p>
     ${A.items.map(i => {
       const T = TESTS[i.key];
       const st = i.doneToday || !i.due ? `<span class="check" style="color:var(--good);border-color:var(--good)">✓</span>` : '<span class="check">＋</span>';
@@ -739,6 +1018,7 @@ function applySync(data) {
   delete data.date;
   E.mergeHealth(date, data);
   const done = E.autoCompleteFromHealth(date);
+  if (E.adjustForReadiness(date)) done.push('האימון הוקל בגלל שינה קצרה');
   E.snapshot();
   E.save();
   render();
@@ -782,7 +1062,7 @@ function renderLog() {
   ${win('PROGRESS', `<p class="small muted" style="margin-top:0">שיפור מצטבר ב-% מנקודת ההתחלה</p>${bigChart()}`, { icon: '↗' })}
   ${win('LOG', L.length ? L.slice(0, 80).map(e => `
     <div class="log-item" data-l="${e.id}">
-      <div class="row between"><span>${ACTIVITIES[e.type].icon} <b>${ACTIVITIES[e.type].he}</b></span><span class="small muted en">${e.date}</span></div>
+      <div class="row between"><span><b>${esc(entryTitle(e))}</b></span><span class="small muted en">${e.date}</span></div>
       <div class="small muted">${e.params.duration ? e.params.duration + ' דק׳' : ''}${e.params.distance ? ' · ' + e.params.distance + ' ק״מ' : ''}${e.params.reps ? e.params.reps + ' חזרות' : ''}${e.params.hours != null ? e.params.hours + ' שעות' : ''}${e.params.rpe ? ' · RPE ' + e.params.rpe : ''}${e.source !== 'manual' ? ' · ' + esc(e.source) : ''} · +${e.xp} EXP</div>
       <div class="chips">${Object.entries(e.gains).map(([k, v]) => `<span class="chip" style="border-color:${STATS[k].color};color:${STATS[k].color}">${k} +${v.toFixed(2)}%</span>`).join('')}</div>
     </div>`).join('') : '<p class="muted center">עוד אין פעילויות. השלימו משימה ראשונה!</p>', { icon: '≡' })}
@@ -854,7 +1134,7 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.1</p>
+  <p class="small muted center en">ASCEND v1.2</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();

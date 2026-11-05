@@ -127,6 +127,11 @@ export const ACTIVITIES = {
     note: 'התערבויות הכרת תודה — השפעה קטנה אך עקבית על רווחה (Davis 2016).',
     xp: 15,
   },
+  habit: {
+    he: 'הרגל יומי', icon: '✅', fields: [], defaults: {}, fixedDose: 1,
+    effects: {},
+    xp: 12,
+  },
   sleep: {
     he: 'שינה', icon: '🌙', fields: ['hours'], defaults: { hours: 7.5 },
     effects: { MND: 1 },
@@ -254,6 +259,11 @@ export const SOURCES = {
   mujika2000: 'Mujika I, Padilla S — Detraining: loss of training-induced physiological and performance adaptations. Part I. Sports Med. 2000;30(2):79–87.',
   cooper1968: 'Cooper KH — A means of assessing maximal oxygen intake. JAMA. 1968;203(3):201–204.',
   who5: 'Topp CW et al. — The WHO-5 Well-Being Index: a systematic review of the literature. Psychother Psychosom. 2015;84(3):167–176.',
+  lally2010: 'Lally P, van Jaarsveld CHM, Potts HWW, Wardle J — How are habits formed: modelling habit formation in the real world. Eur J Soc Psychol. 2010;40(6):998–1009.',
+  jenkins2019: 'Jenkins EM et al. — Do stair climbing exercise "snacks" improve cardiorespiratory fitness? Appl Physiol Nutr Metab. 2019;44(6):681–684.',
+  curry2018: 'Curry OS et al. — Happy to help? A systematic review and meta-analysis of the effects of performing acts of kindness on the well-being of the actor. J Exp Soc Psychol. 2018;76:320–329.',
+  holtlunstad2010: 'Holt-Lunstad J, Smith TB, Layton JB — Social relationships and mortality risk: a meta-analytic review. PLoS Med. 2010;7(7):e1000316.',
+  golden2005: 'Golden RN et al. — The efficacy of light therapy in the treatment of mood disorders: a review and meta-analysis of the evidence. Am J Psychiatry. 2005;162(4):656–662.',
   tanaka2001: 'Tanaka H, Monahan KD, Seals DR — Age-predicted maximal heart rate revisited. J Am Coll Cardiol. 2001;37(1):153–156.',
 };
 

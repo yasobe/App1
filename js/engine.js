@@ -5,6 +5,7 @@ import {
   STATS, STAT_KEYS, ACTIVITIES, TESTS, TRAINING_STATUS,
   computeDose, clamp, fmt,
 } from './research.js';
+import { HABIT_LIBRARY, libraryItem, automaticity } from './habits.js';
 
 const STORE_KEY = 'ascend.v1';
 
@@ -133,13 +134,16 @@ export function applyActivity(type, params, opts = {}) {
   const a = ACTIVITIES[type];
   const date = opts.date || today();
   const { dose, parts } = computeDose(type, params);
+  const effects = opts.effects || a.effects;
   const details = [];
   const gains = {};
-  for (const [k, w] of Object.entries(a.effects)) {
+  for (const [k, w] of Object.entries(effects)) {
     const S = STATS[k], st = state.stats[k];
     let d = dose * w;
     let repeat = false;
-    if (st.stimDay === date && st.stimCount >= 1) { d *= 0.5; repeat = true; }
+    // גירוי חוזר באותו יום — רק בין אימונים משמעותיים (הרגלים קטנים לא נספרים)
+    const big = d >= 0.5;
+    if (big && st.stimDay === date && st.stimCount >= 1) { d *= 0.5; repeat = true; }
     if (d <= 0) continue;
     const before = st.abs;
     const remaining = Math.max(0, st.gmax - st.abs);
@@ -150,16 +154,19 @@ export function applyActivity(type, params, opts = {}) {
     const delta = inc / (1 + st.base / 100);
     const perStdRel = perStd / (1 + st.base / 100);
     gains[k] = delta;
-    if (st.stimDay !== date) { st.stimDay = date; st.stimCount = 0; }
-    st.stimCount++;
+    if (big) {
+      if (st.stimDay !== date) { st.stimDay = date; st.stimCount = 0; }
+      st.stimCount++;
+    }
     if (date > st.lastStim) st.lastStim = date;
     const progress = st.abs / st.gmax;
-    details.push({ k, weight: w, dose: d, perStd: perStdRel, delta, progress, repeat, before });
+    details.push({ k, weight: w, dose: d, perStd: perStdRel, delta, inc, progress, repeat, before });
   }
-  const xp = addXP(a.xp * clamp(dose, 0.5, 1.5) + (opts.questMain ? 15 : 0));
+  const xp = addXP(opts.xp ?? (a.xp * clamp(dose, 0.5, 1.5) + (opts.questMain ? 15 : 0)));
   const entry = {
     id: 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     date, type, params, dose, doseParts: parts, gains, details, xp,
+    label: opts.label || null, note: opts.note || null,
     source: opts.source || 'manual', questId: opts.questId || null, at: Date.now(),
   };
   state.log.unshift(entry);
@@ -167,6 +174,41 @@ export function applyActivity(type, params, opts = {}) {
   if (date < today()) snapshot(today());
   save();
   return entry;
+}
+
+// מחיקת פעילות: מבטל את השיפור, ה-EXP וסימון המשימה
+export function deleteEntry(id) {
+  const i = state.log.findIndex(e => e.id === id);
+  if (i < 0) return null;
+  const e = state.log[i];
+  for (const d of e.details || []) {
+    const st = state.stats[d.k];
+    const inc = d.inc ?? d.delta * (1 + st.base / 100);
+    st.abs = Math.max(-60, st.abs - inc);
+  }
+  state.xp = Math.max(0, state.xp - (e.xp || 0));
+  state.log.splice(i, 1);
+  const day = state.quests[e.date];
+  const qq = day?.items.find(x => x.logId === id || (e.questId && x.id === e.questId));
+  if (qq && qq.done) uncompleteQuest(e.date, qq.id);
+  snapshot(today());
+  save();
+  return e;
+}
+
+function uncompleteQuest(date, questId) {
+  const qq = state.quests[date]?.items.find(x => x.id === questId);
+  if (!qq || !qq.done) return;
+  qq.done = false; qq.logId = null; qq.doneAt = null;
+  if (qq.cat && !qq.noProg) {
+    const p = prog();
+    if (qq.cat === 'steps') p.stepsGoal = Math.max(3000, (p.stepsGoal || 6000) - 250);
+    else p[qq.cat] = Math.max(0, (p[qq.cat] || 0) - 1);
+  }
+  if (qq.habitId) {
+    const arr = state.habitDone?.[qq.habitId];
+    if (arr) state.habitDone[qq.habitId] = arr.filter(d => d !== date);
+  }
 }
 
 // ---------------- מבחנים וכיול ----------------
@@ -206,6 +248,27 @@ export function recordTest(key, value, opts = {}) {
 export function lastTest(key) {
   for (let i = state.tests.length - 1; i >= 0; i--) if (state.tests[i].key === key) return state.tests[i];
   return null;
+}
+
+// מחיקת מדידה. מחיקת מבחן ההתחלה = איפוס נקודת ההתחלה של אותו מבחן.
+export function deleteTest(at) {
+  const t = state.tests.find(x => x.at === at);
+  if (!t) return null;
+  const first = state.tests.find(x => x.key === t.key);
+  if (first === t) return resetBaseline(t.key);
+  state.tests = state.tests.filter(x => x !== t);
+  state.xp = Math.max(0, state.xp - 40);
+  save();
+  return { reset: false };
+}
+export function resetBaseline(key) {
+  const n = state.tests.filter(x => x.key === key).length;
+  state.tests = state.tests.filter(x => x.key !== key);
+  delete state.baselines[key];
+  state.xp = Math.max(0, state.xp - 40 * n);
+  if (key === 'pushups') prog().str = 0;
+  save();
+  return { reset: true, removed: n };
 }
 
 // ---------------- צ'ק-אין ----------------
@@ -265,7 +328,8 @@ const TEMPLATES = {
   5: ['strength', 'run', 'cardioB', 'strength', 'runLong', 'mobilityLong', null],
   6: ['strength', 'run', 'cardioB', 'strength', 'runLong', 'mobilityLong', 'walkLong'],
 };
-const QUEST_VERSION = 2;
+const QUEST_VERSION = 3;
+const TRAINING_CATS = ['str', 'end', 'spd'];
 
 function weekParity(date) { return Math.floor(daysBetween('2024-01-07', date) / 7) % 2; }
 
@@ -293,72 +357,261 @@ export function stepsGoal() {
   return p.stepsGoal;
 }
 
+// ---- שבוע קל: כל שבוע רביעי — נפח ~60% כדי לאפשר התאוששות והסתגלות ----
+export function isDeloadWeek(date = today()) {
+  const wk = Math.floor(daysBetween(state.profile.startedAt, date) / 7);
+  return wk > 0 && wk % 4 === 3;
+}
+// ---- כאב שדווח: 3 ימים של עומס מופחת ----
+export function painActive(date = today()) {
+  return state.pain && daysBetween(state.pain.date, date) >= 0 && daysBetween(state.pain.date, date) < 3;
+}
+// ---- מוכנות: שינה קצרה / אנרגיה נמוכה / לחץ גבוה → יום קל ----
+export function readiness(date = today()) {
+  const sleep = state.health[date]?.sleepH ?? state.log.find(e => e.date === date && e.type === 'sleep')?.params.hours;
+  const c = state.checkins[date];
+  const reasons = [];
+  if (sleep != null && sleep < 6) reasons.push(`שינה של ${fmt(sleep, 1)} שעות`);
+  if (c && c.energy <= 3) reasons.push('אנרגיה נמוכה');
+  if (c && c.stress >= 8) reasons.push('לחץ גבוה');
+  return { low: reasons.length > 0, reasons };
+}
+
+// בונה משימת אימון לפי סוג. factor < 1 = גרסה קלה.
+function builders(date, factor = 1) {
+  const P = state.profile;
+  const p = prog();
+  const parity = weekParity(date);
+  const gym = P.equipment === 'gym';
+  const up = (n) => n > 0 ? `↑ רמה ${n + 1}` : 'רמה 1';
+  const f = (n, min = 1) => Math.max(min, Math.round(n * factor));
+
+  const maxPush = lastTest('pushups')?.value ?? 10;
+  const baseReps = Math.max(4, Math.round(maxPush * 0.5));
+  const reps = f(baseReps * (1 + 0.03 * p.str), 3);
+  const sets = f(Math.min(5, 3 + Math.floor(p.str / 4)), 2);
+  const runMin = f(Math.min(60, 20 + 1.5 * p.end), 10);
+  const intN = f(Math.min(10, 4 + Math.floor(p.end / 3)), 3);
+  const sprN = f(Math.min(10, 4 + Math.floor(p.spd / 2)), 3);
+  const mobMin = Math.min(20, 8 + Math.floor(p.mob / 2));
+  const mobLong = Math.min(40, 20 + p.mob);
+  const plank = f(Math.min(120, 30 + 5 * p.str), 15);
+
+  const B = {
+    strength: () => gym
+      ? q('strength', 'אימון כוח', `${sets + 1} תרגילים מורכבים (סקוואט/דדליפט, לחיצה, משיכה, לאנג׳ים) — ${sets}×6–10 חזרות, RPE ${factor < 1 ? '6' : '7–8'}. ${factor < 1 ? 'משקלים כמו בפעם הקודמת, בלי להעלות.' : 'עומס פרוגרסיבי: הוסיפו 2.5 ק״ג או חזרה אחת לעומת האימון הקודם.'}`, { cat: 'str', lvl: up(p.str), timer: { rest: 120 }, target: { duration: f(50, 20), rpe: factor < 1 ? 6 : 8 } })
+      : q('strength', 'אימון כוח', `${sets} סבבים: ${reps} שכיבות סמיכה · ${Math.round(reps * 1.8 + 5)} סקוואטים · ${plank} שנ׳ פלאנק · ${Math.max(5, Math.round(reps * 0.8))} לאנג׳ים לכל רגל. מנוחה 90 שנ׳.`, { cat: 'str', lvl: up(p.str), timer: { rest: 90, hold: plank }, target: { duration: 25 + sets * 4, rpe: factor < 1 ? 6 : 7 } }),
+    run: () => q('run', 'ריצה קלה', `${runMin} דק׳ בקצב שבו אפשר לדבר (אזור 2). מתחילים? הליכה-ריצה לסירוגין זה מצוין.`, { cat: 'end', lvl: up(p.end), timer: { countdown: runMin }, target: { duration: runMin, distance: +(runMin / 7).toFixed(1), rpe: 5 } }),
+    runLong: () => { const m = f(Math.min(80, Math.round((20 + 1.5 * p.end) * 1.4)), 15); return q('run', 'ריצה ארוכה', `${m} דק׳ בקצב נוח ויציב.`, { cat: 'end', lvl: up(p.end), timer: { countdown: m }, target: { duration: m, distance: +(m / 7).toFixed(1), rpe: 6 } }); },
+    cardio: () => q('cardio', 'אירובי חלופי', `${runMin} דק׳ אופניים / שחייה / אליפטיקל / חתירה בקצב בינוני.`, { cat: 'end', lvl: up(p.end), timer: { countdown: runMin }, target: { duration: runMin, rpe: 6 } }),
+    cardioA: () => parity ? B.intervals() : B.run(),
+    cardioB: () => parity ? B.sprints() : B.intervals(),
+    intervals: () => q('intervals', 'אינטרוולים', `חימום 8 דק׳, ואז ${intN}× (דקה מהר מאוד / 2 דק׳ קל), שחרור 5 דק׳.`, { cat: 'end', lvl: up(p.end), timer: { intervals: { warm: 480, work: 60, rest: 120, n: intN, cool: 300 } }, target: { duration: 13 + intN * 3, rpe: factor < 1 ? 7 : 8 } }),
+    sprints: () => q('sprints', 'ספרינטים', `חימום 10 דק׳ + תרגילי ריצה. ${sprN}× ספרינט 30 מ׳ במאמץ מלא, מנוחה 2–3 דק׳ מלאה.`, { cat: 'spd', lvl: up(p.spd), timer: { rest: 150 }, target: { reps: sprN, rpe: 9 } }),
+    mobilityLong: () => q('mobility', 'מוביליטי ארוך / יוגה', `${mobLong} דק׳: ירכיים, המסטרינג, כתפיים, גב עליון. החזקות של 30–60 שנ׳.`, { cat: 'mob', lvl: up(p.mob), timer: { countdown: mobLong }, target: { duration: mobLong } }),
+    mobility: () => q('mobility', 'מוביליטי יומי', `${mobMin} דק׳ מתיחות לכל הגוף.`, { cat: 'mob', lvl: up(p.mob), timer: { countdown: mobMin }, target: { duration: mobMin } }),
+    walkLong: () => q('walk', 'הליכה ארוכה בטבע', '60 דק׳ בפארק / חוף / שביל.', { timer: { countdown: 60 }, target: { duration: 60 } }),
+    walk: () => q('walk', 'הליכה', '30 דק׳ הליכה, עדיף בטבע.', { timer: { countdown: 30 }, target: { duration: 30 } }),
+    recovery: () => q('mobility', 'התאוששות: מתיחות עדינות', '15 דק׳ מתיחות עדינות בטווח בלי כאב. כאב חד, נפיחות או כאב שלא עובר — לפנות לרופא או פיזיותרפיסט.', { cat: 'mob', timer: { countdown: 15 }, target: { duration: 15 } }),
+  };
+  return B;
+}
+
+// אילו חלופות אפשר להציע במקום משימה
+export const SWAP_OPTIONS = {
+  strength: ['strength', 'cardio', 'mobilityLong', 'walk'],
+  run: ['cardio', 'intervals', 'walk', 'mobilityLong'],
+  cardio: ['run', 'intervals', 'walk'],
+  intervals: ['run', 'cardio', 'sprints', 'walk'],
+  sprints: ['intervals', 'run', 'walk'],
+  mobility: ['mobilityLong', 'walk'],
+  walk: ['mobility', 'cardio'],
+};
+export const SWAP_LABELS = { strength: 'אימון כוח', run: 'ריצה', cardio: 'אופניים / שחייה / אליפטיקל', intervals: 'אינטרוולים', sprints: 'ספרינטים', mobilityLong: 'מוביליטי ארוך / יוגה', mobility: 'מוביליטי קצר', walk: 'הליכה' };
+
 export function questsFor(date) {
   const day = state.quests[date];
   if (!day || day.v !== QUEST_VERSION) {
     const items = generateQuests(date);
     // מעבר מגרסה קודמת: שומרים מה שכבר הושלם
-    if (day) for (const it of items) { const old = day.items.find(o => o.kind === it.kind && o.done); if (old) { it.done = true; it.logId = old.logId; } }
-    state.quests[date] = { items, cleared: day?.cleared || false, v: QUEST_VERSION };
+    if (day) for (const it of items) { const old = day.items.find(o => o.kind === it.kind && o.done && o.habitId === it.habitId); if (old) { it.done = true; it.logId = old.logId; } }
+    state.quests[date] = { items, cleared: day?.cleared || false, v: QUEST_VERSION, rest: day?.rest || null, notes: [] };
+    applyDayModifiers(date);
     save();
   }
   return state.quests[date];
 }
 
+function trainingFactor(date) {
+  let f = 1; const notes = [];
+  if (isDeloadWeek(date)) { f *= 0.6; notes.push('שבוע קל: כל שבוע רביעי הנפח יורד ל-60% כדי שהגוף יספוג את השיפור.'); }
+  if (painActive(date)) { f *= 0.5; notes.push('דיווחת על כאב — עומס מופחת ל-3 ימים.'); }
+  return { f, notes };
+}
+
 // מחזיר את משימות היום לפי הרמה וההתקדמות הנוכחית
 function generateQuests(date) {
   const P = state.profile;
-  const p = prog();
   const list = [];
   const initial = !Object.keys(state.baselines).length;
-
   const days = clamp(Number(P.daysPerWeek) || 4, 3, 6);
   const dow = parseDay(date).getDay(); // 0 = ראשון
   const slot = initial ? null : TEMPLATES[days][dow];
-  const parity = weekParity(date);
-  const gym = P.equipment === 'gym';
-  const up = (n) => n > 0 ? `↑ רמה ${n + 1}` : 'רמה 1';
+  const { f } = trainingFactor(date);
+  const B = builders(date, f);
+  const p = prog();
 
-  // --- כוח ---
-  const maxPush = lastTest('pushups')?.value ?? 10;
-  const baseReps = Math.max(4, Math.round(maxPush * 0.5));
-  const reps = Math.round(baseReps * (1 + 0.03 * p.str));
-  const sets = Math.min(5, 3 + Math.floor(p.str / 4));
-  // --- סיבולת / מהירות ---
-  const runMin = Math.min(60, Math.round(20 + 1.5 * p.end));
-  const intN = Math.min(10, 4 + Math.floor(p.end / 3));
-  const sprN = Math.min(10, 4 + Math.floor(p.spd / 2));
-  // --- גמישות / נפש ---
-  const mobMin = Math.min(20, 8 + Math.floor(p.mob / 2));
-  const mobLong = Math.min(40, 20 + p.mob);
+  if (initial) list.push(q('walk', 'יום ראשון: הליכה קלה', 'היום עושים את ההערכה הראשונית (למעלה). חוץ ממנה — רק 20 דק׳ הליכה. מחר מתחיל האימון.', { timer: { countdown: 20 }, target: { duration: 20 } }));
+  else if (slot && painActive(date) && ['strength', 'run', 'runLong', 'cardioA', 'cardioB'].includes(slot)) list.push(B.recovery());
+  else if (slot) { const t = B[slot](); if (f < 1) t.noProg = true; list.push(t); }
+  else list.push(q('walk', 'יום התאוששות: הליכה', '30 דק׳ הליכה, עדיף בטבע. התאוששות היא חלק מהאימון — השרירים מתחזקים במנוחה.', { timer: { countdown: 30 }, target: { duration: 30 } }));
+
+  if (slot !== 'mobilityLong') list.push(B.mobility());
   const medMin = Math.min(20, 5 + Math.floor(p.mind / 2));
-
-  const main = {
-    strength: () => gym
-      ? q('strength', 'אימון כוח', `${sets + 1} תרגילים מורכבים (סקוואט/דדליפט, לחיצה, משיכה, לאנג׳ים) — ${sets}×6–10 חזרות, RPE 7–8. עומס פרוגרסיבי: הוסיפו 2.5 ק״ג או חזרה אחת לעומת האימון הקודם.`, { cat: 'str', lvl: up(p.str), target: { duration: 50, rpe: 8 } })
-      : q('strength', 'אימון כוח', `${sets} סבבים: ${reps} שכיבות סמיכה · ${Math.round(reps * 1.8 + 5)} סקוואטים · ${Math.min(120, 30 + 5 * p.str)} שנ׳ פלאנק · ${Math.max(6, Math.round(reps * 0.8))} לאנג׳ים לכל רגל. מנוחה 90 שנ׳.`, { cat: 'str', lvl: up(p.str), target: { duration: 25 + sets * 4, rpe: 7 } }),
-    run: () => q('run', 'ריצה קלה', `${runMin} דק׳ בקצב שבו אפשר לדבר (אזור 2). מתחילים? הליכה-ריצה לסירוגין זה מצוין.`, { cat: 'end', lvl: up(p.end), target: { duration: runMin, distance: +(runMin / 7).toFixed(1), rpe: 5 } }),
-    runLong: () => { const m = Math.min(80, Math.round(runMin * 1.4)); return q('run', 'ריצה ארוכה', `${m} דק׳ בקצב נוח ויציב.`, { cat: 'end', lvl: up(p.end), target: { duration: m, distance: +(m / 7).toFixed(1), rpe: 6 } }); },
-    cardioA: () => parity ? main.intervals() : main.run(),
-    cardioB: () => parity ? main.sprints() : main.intervals(),
-    intervals: () => q('intervals', 'אינטרוולים', `חימום 8 דק׳, ואז ${intN}× (דקה מהר מאוד / 2 דק׳ קל), שחרור 5 דק׳.`, { cat: 'end', lvl: up(p.end), target: { duration: 13 + intN * 3, rpe: 8 } }),
-    sprints: () => q('sprints', 'ספרינטים', `חימום 10 דק׳ + תרגילי ריצה. ${sprN}× ספרינט 30 מ׳ במאמץ מלא, מנוחה 2–3 דק׳ מלאה.`, { cat: 'spd', lvl: up(p.spd), target: { reps: sprN, rpe: 9 } }),
-    mobilityLong: () => q('mobility', 'מוביליטי ארוך / יוגה', `${mobLong} דק׳: ירכיים, המסטרינג, כתפיים, גב עליון. החזקות של 30–60 שנ׳.`, { cat: 'mob', lvl: up(p.mob), target: { duration: mobLong } }),
-    walkLong: () => q('walk', 'הליכה ארוכה בטבע', '60 דק׳ בפארק / חוף / שביל.', { target: { duration: 60 } }),
-  };
-
-  if (initial) list.push(q('walk', 'יום ראשון: הליכה קלה', 'היום עושים את ההערכה הראשונית (למעלה). חוץ ממנה — רק 20 דק׳ הליכה. מחר מתחיל האימון.', { target: { duration: 20 } }));
-  else if (slot) list.push(main[slot]());
-  else list.push(q('walk', 'יום התאוששות: הליכה', '30 דק׳ הליכה, עדיף בטבע. התאוששות היא חלק מהאימון — השרירים מתחזקים במנוחה.', { target: { duration: 30 } }));
-
-  if (slot !== 'mobilityLong') list.push(q('mobility', 'מוביליטי יומי', `${mobMin} דק׳ מתיחות לכל הגוף.`, { cat: 'mob', lvl: up(p.mob), target: { duration: mobMin } }));
-  list.push(q('meditation', 'מדיטציה', `${medMin} דק׳ נשימות / קשיבות (אפשר עם אפליקציה).`, { cat: 'mind', lvl: up(p.mind), target: { duration: medMin } }));
+  list.push(q('meditation', 'מדיטציה', `${medMin} דק׳ נשימות / קשיבות.`, { cat: 'mind', lvl: p.mind > 0 ? `↑ רמה ${p.mind + 1}` : 'רמה 1', timer: { countdown: medMin }, target: { duration: medMin } }));
   const sg = stepsGoal();
   list.push(q('steps', `${sg.toLocaleString('he-IL')} צעדים`, sg < 8000 ? `עולה ב-250 בכל פעם שמשלימים, עד ${stepsTarget().toLocaleString('he-IL')}+ (Paluch 2022).` : 'מתעדכן מ-Apple Health או ידנית.', { cat: 'steps', target: { steps: sg } }));
   list.push(q('sleep', 'שינה: 7–9 שעות', 'כמה ישנת הלילה? השינה היא המקום שבו הגוף בונה את השיפור.', { target: { hours: 7.5 } }));
-  list.push(q('checkin', 'דיווח מצב (בונוס)', 'מצב רוח, אנרגיה ולחץ — 30 שניות.', { main: false }));
+  for (const h of activeHabits()) list.push(habitQuest(h));
+  list.push(q('checkin', 'דיווח מצב (בונוס)', 'מצב רוח, אנרגיה ולחץ — 30 שניות. אנרגיה נמוכה = האימון של היום יוקל.', { main: false }));
   list.push(q('journal', 'יומן הכרת תודה (בונוס)', 'כתבו 3 דברים טובים מהיום.', { main: false }));
   return list;
+}
+
+// הערות ליום (שבוע קל, כאב, מוכנות)
+function applyDayModifiers(date) {
+  const day = state.quests[date];
+  const { notes } = trainingFactor(date);
+  day.notes = notes;
+  const r = readiness(date);
+  if (r.low) adjustForReadiness(date, r);
+}
+
+// מוכנות נמוכה → מחליף את האימון של היום בגרסה של 60%
+export function adjustForReadiness(date = today(), r = readiness(date)) {
+  const day = state.quests[date];
+  if (!day || !r.low || day.readinessAdjusted) return false;
+  const i = day.items.findIndex(x => !x.done && TRAINING_CATS.includes(x.cat));
+  if (i < 0) return false;
+  const { f } = trainingFactor(date);
+  const kind = day.items[i].kind === 'run' && day.items[i].title.includes('ארוכה') ? 'runLong' : day.items[i].kind;
+  const B = builders(date, f * 0.6);
+  if (!B[kind]) return false;
+  const nq = B[kind]();
+  nq.title += ' (גרסה קלה)';
+  nq.noProg = true;
+  day.items[i] = nq;
+  day.readinessAdjusted = true;
+  day.notes = [...(day.notes || []), `יום קל בגלל ${r.reasons.join(' + ')}. אימון קל עדיין בונה — ושומר על הרצף.`];
+  save();
+  return true;
+}
+
+// החלפת משימה בחלופה
+export function swapQuest(date, questId, kind) {
+  const day = questsFor(date);
+  const i = day.items.findIndex(x => x.id === questId);
+  if (i < 0 || day.items[i].done) return null;
+  const { f } = trainingFactor(date);
+  const B = builders(date, f * (day.readinessAdjusted ? 0.6 : 1));
+  if (!B[kind]) return null;
+  const nq = B[kind]();
+  nq.swappedFrom = day.items[i].title;
+  if (f < 1 || day.readinessAdjusted) nq.noProg = true;
+  day.items[i] = nq;
+  save();
+  return nq;
+}
+
+// דיווח כאב: מחליף את האימון של היום בהתאוששות ומקל ל-3 ימים
+export function reportPain(date, questId, area) {
+  state.pain = { date, area };
+  const day = questsFor(date);
+  const i = day.items.findIndex(x => x.id === questId);
+  if (i >= 0 && !day.items[i].done) { day.items[i] = builders(date).recovery(); day.items[i].noProg = true; }
+  day.notes = [...(day.notes || []), 'דיווחת על כאב — עומס מופחת ל-3 ימים.'];
+  save();
+}
+
+// ---------------- יום מנוחה / מחלה ----------------
+// מנוחה: פעם בשבוע (ראשון–שבת), שומר על הרצף. מחלה: ללא הגבלה, שומר על הרצף בלי EXP.
+export function restUsedThisWeek(date = today()) {
+  const d = parseDay(date); const start = addDays(date, -d.getDay());
+  for (let i = 0; i < 7; i++) { const k = addDays(start, i); if (state.quests[k]?.rest === 'rest') return k; }
+  return null;
+}
+export function markRest(date, type) {
+  const day = questsFor(date);
+  if (type === 'rest' && restUsedThisWeek(date) && restUsedThisWeek(date) !== date) return { ok: false, reason: 'כבר השתמשת ביום מנוחה השבוע.' };
+  day.rest = type;
+  const s = state.streak;
+  if (s.lastDay === addDays(date, -1)) s.lastDay = date; // הרצף ממשיך בלי לגדול
+  save();
+  return { ok: true };
+}
+export function unmarkRest(date) { const day = questsFor(date); day.rest = null; save(); }
+
+// ---------------- הרגלים ----------------
+export function activeHabits() { return (state.habits || []).filter(h => h.active); }
+export function habitDays(id) { return (state.habitDone?.[id] || []).length; }
+export function habitInfo(h) {
+  const days = habitDays(h.id);
+  return { days, auto: automaticity(days) };
+}
+function habitQuest(h) {
+  const { days, auto } = habitInfo(h);
+  return q('habit', `${h.icon} ${h.name}`, auto >= 0.95 ? `הרגל מושרש ✓ (${days} ימים)` : `יום ${days + 1} · אוטומטיות ${Math.round(auto * 100)}%`, { habitId: h.id, small: true });
+}
+export function setHabit(key, on) {
+  state.habits ||= [];
+  const lib = libraryItem(key);
+  let h = state.habits.find(x => x.key === key);
+  if (on) {
+    if (h) h.active = true;
+    else state.habits.push(h = { id: 'H' + Math.random().toString(36).slice(2, 8), key, name: lib.name, icon: lib.icon, active: true, createdAt: today() });
+  } else if (h) h.active = false;
+  syncHabitsIntoToday();
+  save();
+  return h;
+}
+export function addCustomHabit(name, icon) {
+  state.habits ||= [];
+  const h = { id: 'H' + Math.random().toString(36).slice(2, 8), key: 'custom', name, icon, active: true, createdAt: today() };
+  state.habits.push(h);
+  syncHabitsIntoToday();
+  save();
+  return h;
+}
+export function removeHabit(id) {
+  const h = (state.habits || []).find(x => x.id === id);
+  if (h) h.active = false;
+  syncHabitsIntoToday();
+  save();
+}
+export function syncHabitsIntoToday(date = today()) {
+  const day = state.quests[date];
+  if (!day) return;
+  const act = activeHabits();
+  day.items = day.items.filter(x => x.kind !== 'habit' || x.done || act.some(h => h.id === x.habitId));
+  const idx = day.items.findIndex(x => x.kind === 'checkin');
+  for (const h of act) if (!day.items.some(x => x.habitId === h.id)) day.items.splice(idx < 0 ? day.items.length : idx, 0, habitQuest(h));
+}
+export function completeHabit(date, questId) {
+  const day = questsFor(date);
+  const qq = day.items.find(x => x.id === questId);
+  const h = (state.habits || []).find(x => x.id === qq?.habitId);
+  if (!qq || !h || qq.done) return null;
+  const lib = h.key !== 'custom' ? libraryItem(h.key) : null;
+  const effects = lib?.effects || {};
+  const entry = applyActivity('habit', {}, { date, effects, label: `${h.icon} ${h.name}`, note: lib?.note, questId, xp: 12 });
+  state.habitDone ||= {};
+  const arr = (state.habitDone[h.id] ||= []);
+  if (!arr.includes(date)) arr.push(date);
+  const before = automaticity(arr.length - 1), after = automaticity(arr.length);
+  let rooted = false;
+  if (before < 0.95 && after >= 0.95) { addXP(150); rooted = true; }
+  const res = completeQuest(date, questId, entry);
+  return { entry, ...res, days: arr.length, auto: after, rooted };
 }
 
 // ---------------- הערכה שבועית ----------------
@@ -423,7 +676,7 @@ export function completeQuest(date, questId, logEntryOrNull) {
   qq.logId = logEntryOrNull?.id || null;
   qq.doneAt = Date.now();
   // עומס פרוגרסיבי: ההשלמה מעלה את היעד הבא בקטגוריה
-  if (qq.cat) {
+  if (qq.cat && !qq.noProg) {
     const p = prog();
     if (qq.cat === 'steps') p.stepsGoal = Math.min(10000, (p.stepsGoal || 6000) + 250);
     else p[qq.cat] = (p[qq.cat] || 0) + 1;
@@ -446,6 +699,19 @@ export function completeQuest(date, questId, logEntryOrNull) {
   return res;
 }
 
+// פעילות חופשית שמתאימה למשימה פתוחה של היום — משלימה אותה
+const KIND_GROUP = { run: 'end', cardio: 'end', intervals: 'end' };
+export function completeMatching(date, type, entry) {
+  const day = state.quests[date];
+  if (!day) return null;
+  const qq = day.items.find(x => !x.done && x.kind === type) ||
+    (KIND_GROUP[type] && day.items.find(x => !x.done && KIND_GROUP[x.kind] === KIND_GROUP[type]));
+  if (!qq || qq.kind === 'habit') return null;
+  entry.questId = qq.id;
+  const res = completeQuest(date, qq.id, entry);
+  return { quest: qq, ...res };
+}
+
 // בודק אם אתמול נכשלו משימות — "אזור עונש"
 export function penaltyCheck() {
   const t = today();
@@ -454,7 +720,7 @@ export function penaltyCheck() {
   state.lastPenaltyCheck = t;
   const day = state.quests[y];
   let res = null;
-  if (day && !day.cleared) {
+  if (day && !day.cleared && !day.rest) {
     const missed = day.items.filter(x => x.main && !x.done).length;
     if (missed > 0) {
       const lost = state.streak.count;
