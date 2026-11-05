@@ -29,6 +29,15 @@ let tab = 'status';
 function boot() {
   E.load();
   if (!E.state) { renderOnboarding(); return; }
+  setInterval(updateSpecialCountdown, 1000);
+  setInterval(() => {
+    if (!E.state) return;
+    if (!E.clockCheck().ok) return render();
+    if (E.state.lastDecay !== E.today()) { dailyTick(); render(); }
+    checkSpecial();
+  }, 30000);
+  const ck = E.clockCheck();
+  if (!ck.ok) return renderClockLock(ck.until);
   dailyTick();
   // סנכרון דרך כתובת (#sync?steps=...)
   const hs = parseHashSync(location.hash);
@@ -36,8 +45,6 @@ function boot() {
   showTabs();
   render();
   checkSpecial();
-  setInterval(() => { if (E.state && E.state.lastDecay !== E.today()) { dailyTick(); render(); } if (E.state) checkSpecial(); }, 30000);
-  setInterval(updateSpecialCountdown, 1000);
 }
 
 function dailyTick() {
@@ -67,10 +74,25 @@ function showTabs() {
   nav.onclick = e => { const b = e.target.closest('button[data-tab]'); if (b) { tab = b.dataset.tab; render(); window.scrollTo(0, 0); } };
 }
 function render() {
+  const ck = E.clockCheck();
+  if (!ck.ok) return renderClockLock(ck.until);
   showTabs();
   ({ status: renderStatus, quests: renderQuests, measure: renderMeasure, log: renderLog, system: renderSystem })[tab]();
   const fresh = E.checkAchievements();
   if (fresh.length) showAchievements(fresh);
+}
+
+function renderClockLock(until) {
+  $('nav.tabs')?.remove();
+  closeModal();
+  const d = new Date(until);
+  app.innerHTML = `<div style="height:12vh"></div>${win('WARNING', `
+    <p class="center">השעון של המכשיר הוזז אחורה.</p>
+    <p class="center small muted">כדי שאי אפשר יהיה לקבל ימים ומשימות נוספים מהזזת השעון, המערכת נעולה עד שהזמן האמיתי ישיג את הזמן האחרון שנרשם:</p>
+    <p class="center"><b class="en">${d.toLocaleDateString('he-IL')} ${d.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}</b></p>
+    <p class="center small muted">אם השעון שלך פשוט היה שגוי — כוונו אותו לזמן הנכון (הגדרות ← כללי ← תאריך ושעה ← "הגדר אוטומטית") ופתחו שוב.</p>
+    <button class="btn block" id="retry">בדיקה שוב</button>`, { icon: '!' })}`;
+  $('#retry').onclick = () => { if (E.clockCheck().ok) { dailyTick(); showTabs(); render(); } else render(); };
 }
 
 function showAchievements(list) {
@@ -199,6 +221,7 @@ function renderStatus() {
         <b>הישגים</b><span><button class="link" id="achBtn" style="padding:0">🏆 ${Object.keys(S.achievements || {}).length}/${ACHIEVEMENTS.length}</button></span>
       </div>
     </div>
+    ${S.flags?.tampered ? `<p class="small bad center" style="margin:10px 0 0">⚠ הנתונים נערכו מחוץ לאפליקציה (${S.flags.tampered})</p>` : S.flags?.unverified ? `<p class="small muted center" style="margin:10px 0 0">שוחזר מגיבוי ישן לא מאומת (${S.flags.unverified})</p>` : ''}
     <div class="row between small muted" style="margin-top:10px"><span class="en">EXP</span><span class="en">${li.into} / ${li.need}</span></div>
     <div class="bar"><i style="width:${(li.into / li.need * 100).toFixed(1)}%"></i></div>
     <div class="sep"></div>
@@ -649,9 +672,11 @@ function activityForm(type, { date = E.today(), quest = null, prefill = null } =
       const p = read();
       if (A.fields.includes('duration') && !(p.duration > 0)) return toast('הזינו משך');
       if (type === 'sleep' && !(p.hours >= 0)) return toast('הזינו שעות שינה');
+      const verr = E.validateActivity(type, p);
+      if (verr) return toast(verr);
       stopTimer();
       if (quest?.special) {
-        const entry = E.applyActivity(type, p, { date });
+        const entry = E.applyActivity(type, p, { date, special: true });
         const r = E.completeSpecial(quest.special, entry);
         closeModal(); render();
         return showResult(entry, r);
@@ -768,7 +793,7 @@ function showResult(entry, clear = null, matchedQuest = null) {
     ${entry.type !== 'habit' ? '<p class="small muted">⚠️ אלו הערכות לפי ממוצעים במחקרים; התגובה האישית משתנה מאוד בין אנשים. ההערכה השבועית מכיילת את המספרים לפי המציאות שלך.</p>' : ''}
     <button class="btn block" id="ok">המשך</button>
     <div class="btn-row" style="margin-top:8px">
-      ${entry.type !== 'habit' ? '<button class="btn ghost" id="edit">✎ עריכה</button>' : ''}
+      ${entry.type !== 'habit' && !entry.special && E.canEdit(entry) ? '<button class="btn ghost" id="edit">✎ עריכה</button>' : ''}
       <button class="btn danger" id="del">🗑 מחיקה</button>
     </div>
   `, m => {
@@ -860,6 +885,7 @@ function who5Form(date = E.today(), q = null) {
       if (ans.some(a => a == null)) return toast('ענו על כל 5 השאלות');
       const score = ans.reduce((a, b) => a + b, 0) * 4;
       const r = E.recordTest('who5', score, { date });
+      if (r.error) return toast(r.error);
       if (q) E.completeQuest(date, q.id, null);
       closeModal(); render();
       showTestResult(r);
@@ -891,6 +917,7 @@ function testForm(key, date = E.today(), q = null) {
       if (!Number.isFinite(v)) return toast(key === 'sitreach' ? 'בחרו לאן הגעתם' : 'הזינו מספר');
       if (key === 'sprint' && v <= 0) return toast('זמן לא תקין');
       const r = E.recordTest(key, v, { date });
+      if (r.error) return toast(r.error);
       if (q) E.completeQuest(date, q.id, null);
       closeModal(); render();
       showTestResult(r);
@@ -977,7 +1004,9 @@ function showTestResult(r) {
   modal(`
     <div class="win-title"><span class="badge-i">${S.icon}</span><span class="en">${r.baseline ? 'BASELINE SET' : 'RECALIBRATED'}</span></div>
     <div class="xp-pop en">+${r.xp} EXP</div>
+    ${r.xp === 0 ? '<p class="center small muted">EXP על מבחן — פעם ב-6 ימים לכל מבחן.</p>' : ''}
     <p class="center">${esc(T.he)}: <b>${tv(r.key, r.value)}</b></p>
+    ${r.capped ? `<p class="small warn">השיפור שנמדד גבוה ממה שאפשרי פיזיולוגית בזמן שעבר, אז נלקח עד ${sgn(r.cappedTo, 1)}%. אם המדידה נכונה, המדידות הבאות ישלימו את השאר.</p>` : ''}
     ${r.baseline ? `<p class="center muted small">נקבעה נקודת התחלה. ההערכה של השבוע הבא תראה כמה באמת השתפרת.</p>` :
       `<div class="tiles">
         <div class="tile"><div class="t">המודל חזה</div><div class="n">${sgn(r.modelGain, 1)}%</div></div>
@@ -1007,7 +1036,8 @@ function stepsForm(date, q) {
     m.querySelector('#minimal') && (m.querySelector('#minimal').onclick = () => minimalDialog(date, q));
     m.querySelector('#sf').onsubmit = e => {
       e.preventDefault();
-      const s = Number(new FormData(e.target).get('s'));
+      const s = num(new FormData(e.target).get('s'));
+      if (!(s >= 0 && s <= 70000)) return toast('מספר צעדים לא סביר (0–70,000)');
       E.mergeHealth(date, { steps: s });
       const done = E.autoCompleteFromHealth(date);
       closeModal(); render();
@@ -1297,7 +1327,7 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.4</p>
+  <p class="small muted center en">ASCEND v1.5</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();
@@ -1306,7 +1336,7 @@ function renderSystem() {
     E.save(); toast('נשמר ✓');
   };
   $('#exp').onclick = async () => {
-    const blob = new Blob([JSON.stringify(E.state)], { type: 'application/json' });
+    const blob = new Blob([E.exportBackup()], { type: 'application/json' });
     const file = new File([blob], `ascend-backup-${E.today()}.json`, { type: 'application/json' });
     if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title: 'ASCEND backup' }); return; } catch (e) { if (e.name === 'AbortError') return; } }
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = file.name; a.click();
@@ -1314,9 +1344,8 @@ function renderSystem() {
   $('#imp').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
     try {
-      const s = JSON.parse(await f.text());
-      if (!s.stats || !s.profile) throw new Error('קובץ לא תקין');
-      if (!confirm('לשחזר מהגיבוי? הנתונים הנוכחיים יוחלפו.')) return;
+      const { state: s, verified } = E.importBackup(await f.text());
+      if (!confirm(`לשחזר מהגיבוי? הנתונים הנוכחיים יוחלפו.${verified ? '' : '\n\n⚠ הגיבוי לא מאומת (ישן או נערך ידנית) — זה יסומן בסטטוס.'}`)) return;
       E.replaceState(s); dailyTick(); render(); toast('שוחזר ✓');
     } catch (err) { toast('שגיאה: ' + err.message); }
   };
@@ -1335,6 +1364,10 @@ window.addEventListener('hashchange', () => {
   if (hs && E.state) { history.replaceState(null, '', location.pathname); applySync(hs); }
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && E.state) { if (E.state.lastDecay !== E.today()) dailyTick(); render(); checkSpecial(); }
+  if (document.visibilityState === 'visible' && E.state) {
+    if (!E.clockCheck().ok) return render();
+    if (E.state.lastDecay !== E.today()) dailyTick();
+    render(); checkSpecial();
+  }
 });
 boot();

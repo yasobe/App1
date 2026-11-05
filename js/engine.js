@@ -24,17 +24,68 @@ export function today() { return dayKey(); }
 // ---------------- מצב ----------------
 export let state = null;
 
+// ---- חתימת שלמות: מזהה עריכה ידנית של הנתונים (לא מונעת — מסמנת) ----
+// אפליקציה בלי שרת לא יכולה למנוע עריכה של מי שפותח את הקוד. החתימה הופכת עריכה כזו לגלויה.
+const SIG_KEY = STORE_KEY + '.sig';
+const SALT = 'ascend|7f3c9a|hunter-system';
+function cyrb53(str, seed = 0) {
+  let h1 = 0xdeadbeef ^ seed, h2 = 0x41c6ce57 ^ seed;
+  for (let i = 0, ch; i < str.length; i++) { ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+const sign = json => cyrb53(SALT + json + SALT, 7);
+
 export function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) state = JSON.parse(raw);
+    if (raw) {
+      state = JSON.parse(raw);
+      const sig = localStorage.getItem(SIG_KEY);
+      // אין חתימה = גרסה ישנה, חותמים בפעם הראשונה. חתימה שגויה = נערך ידנית.
+      if (sig && sig !== sign(raw)) {
+        state.flags ||= {};
+        state.flags.tampered ||= today();
+        save();
+      }
+    }
   } catch (e) { state = null; }
   return state;
 }
 export function save() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { console.warn('save failed', e); }
+  try {
+    const json = JSON.stringify(state);
+    localStorage.setItem(STORE_KEY, json);
+    localStorage.setItem(SIG_KEY, sign(json));
+  } catch (e) { console.warn('save failed', e); }
 }
 export function replaceState(s) { state = s; save(); }
+
+// גיבוי חתום
+export function exportBackup() {
+  const json = JSON.stringify(state);
+  return JSON.stringify({ format: 'ascend-backup', v: 2, sig: sign(json), state: json });
+}
+export function importBackup(text) {
+  const o = JSON.parse(text);
+  let s, verified;
+  if (o.format === 'ascend-backup') { s = JSON.parse(o.state); verified = o.sig === sign(o.state); }
+  else { s = o; verified = false; } // גיבוי מגרסה ישנה, לא חתום
+  if (!s.stats || !s.profile) throw new Error('קובץ לא תקין');
+  s.flags ||= {};
+  if (!verified) s.flags[o.format === 'ascend-backup' ? 'tampered' : 'unverified'] ||= today();
+  return { state: s, verified };
+}
+
+// ---- שמירה על השעון: הזזת שעון אחורה נועלת עד שהזמן האמיתי משיג ----
+export function clockCheck(now = Date.now()) {
+  if (!state) return { ok: true };
+  state.clock ||= { maxSeen: now };
+  if (now < state.clock.maxSeen - 15 * 60e3) return { ok: false, until: state.clock.maxSeen };
+  if (now > state.clock.maxSeen) state.clock.maxSeen = now;
+  return { ok: true };
+}
 export function resetAll() { localStorage.removeItem(STORE_KEY); state = null; }
 
 export function createPlayer(profile) {
@@ -143,9 +194,16 @@ export function applyActivity(type, params, opts = {}) {
     const S = STATS[k], st = state.stats[k];
     let d = dose * w;
     let repeat = false;
-    // גירוי חוזר באותו יום — רק בין אימונים משמעותיים (הרגלים קטנים לא נספרים)
+    // גירוי חוזר באותו יום — רק בין אימונים משמעותיים (הרגלים קטנים לא נספרים).
+    // כל אימון נוסף באותו יום שווה חצי מהקודם (×0.5, ×0.25…), ותקרה של 2.5 מנות לתכונה ביום:
+    // מעבר לזה אין במחקר תועלת נוספת, ובעיקר עייפות.
     const big = d >= 0.5;
-    if (big && st.stimDay === date && st.stimCount >= 1) { d *= 0.5; repeat = true; }
+    if (big && st.stimDay === date && st.stimCount >= 1) { d *= Math.pow(0.5, st.stimCount); repeat = true; }
+    if (st.doseDay !== date) { st.doseDay = date; st.doseSum = 0; }
+    const capped = Math.min(d, Math.max(0, 2.5 - st.doseSum));
+    if (capped < d) repeat = true;
+    d = capped;
+    st.doseSum += d;
     if (d <= 0) continue;
     const before = st.abs;
     const remaining = Math.max(0, st.gmax - st.abs);
@@ -164,11 +222,18 @@ export function applyActivity(type, params, opts = {}) {
     const progress = st.abs / st.gmax;
     details.push({ k, weight: w, dose: d, perStd: perStdRel, delta, inc, progress, repeat, before });
   }
-  const xp = addXP(opts.xp ?? (a.xp * clamp(dose, 0.5, 1.5) + (opts.questMain ? 15 : 0)));
+  // פעילות חופשית (לא משימה): ה-EXP יורד עם כל פעילות נוספת באותו יום (1, ½, ¼, 0…)
+  let xpBase = opts.xp ?? (a.xp * clamp(dose, 0.5, 1.5) + (opts.questMain ? 15 : 0));
+  const free = opts.xp === undefined && !opts.questId && !opts.special && type !== 'habit' && (opts.source || 'manual') === 'manual';
+  if (free) {
+    const n = state.log.filter(e => e.date === date && e.free).length;
+    xpBase *= n >= 3 ? 0 : Math.pow(0.5, n);
+  }
+  const xp = addXP(xpBase);
   const entry = {
     id: 'L' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
     date, type, params, dose, doseParts: parts, gains, details, xp,
-    label: opts.label || null, note: opts.note || null,
+    label: opts.label || null, note: opts.note || null, free: free || undefined,
     source: opts.source || 'manual', questId: opts.questId || null, at: Date.now(),
   };
   state.log.unshift(entry);
@@ -177,6 +242,21 @@ export function applyActivity(type, params, opts = {}) {
   save();
   return entry;
 }
+
+export function validateActivity(type, p) {
+  if (p.duration != null && (p.duration < 1 || p.duration > 300)) return 'משך לא סביר (1–300 דקות)';
+  if (p.reps != null && (p.reps < 1 || p.reps > 30)) return 'מספר ספרינטים לא סביר (1–30)';
+  if (p.hours != null && (p.hours < 0 || p.hours > 16)) return 'שעות שינה לא סבירות (0–16)';
+  if (p.distance != null) {
+    if (p.distance < 0 || p.distance > 100) return 'מרחק לא סביר (0–100 ק״מ)';
+    // קצב מהיר משיא העולם (~2:35 דק׳/ק״מ במרתון, ~2:30 ב-10 ק״מ) = כנראה טעות
+    if (type === 'run' && p.duration && p.distance > 0.5 && p.duration / p.distance < 2.5) return 'קצב מהיר משיא העולם — בדקו משך ומרחק';
+  }
+  return null;
+}
+
+// עריכה מותרת רק לפעילות מהיום או מאתמול
+export function canEdit(e) { return e && daysBetween(e.date, today()) <= 1; }
 
 // מחיקת פעילות: מבטל את השיפור, ה-EXP וסימון המשימה
 export function deleteEntry(id) {
@@ -216,8 +296,20 @@ function uncompleteQuest(date, questId) {
 }
 
 // ---------------- מבחנים וכיול ----------------
+// כמה אפשר להשתפר פיזיולוגית בשבוע לכל היותר (נקודות אחוז מוחלטות על העקומה) — נדיב בכוונה
+const MAX_WEEKLY = { STR: 4, END: 2.5, SPD: 1.5, FLX: 4, MND: 10 };
+
+export function validateTest(key, v) {
+  const T = TESTS[key];
+  if (!Number.isFinite(v)) return 'הזינו מספר';
+  if (v < T.min || v > T.max) return `ערך לא סביר: ${T.min}–${T.max} ${T.unit}`;
+  return null;
+}
+
 export function recordTest(key, value, opts = {}) {
   const T = TESTS[key];
+  const err = validateTest(key, value);
+  if (err) return { error: err };
   const date = opts.date || today();
   const k = T.stat;
   const st = state.stats[k];
@@ -233,6 +325,11 @@ export function recordTest(key, value, opts = {}) {
     // מצב נפשי: שילוב 50/50 בין המודל למדידה (שאלון רועש יותר). פיזי: המדידה קובעת.
     let newAbs = k === 'MND' ? 0.5 * modelAbs + 0.5 * measuredAbs : measuredAbs;
     newAbs = Math.max(-60, newAbs);
+    // תקרה פיזיולוגית: אי אפשר "לקפוץ" יותר מ-X בשבוע מאז הכיול הקודם (מונע נקודת התחלה מזויפת נמוכה)
+    const prev = st.lastCalib || { abs: st.base, date: state.profile.startedAt };
+    const weeks = Math.max(1, daysBetween(prev.date, date) / 7);
+    const allowed = Math.max(modelAbs, prev.abs + weeks * MAX_WEEKLY[k]);
+    if (newAbs > allowed) { result.capped = true; result.cappedTo = ((1 + allowed / 100) / (1 + st.base / 100) - 1) * 100; newAbs = allowed; }
     // אם עברת את התקרה הממוצעת — את/ה "מגיב/ה גבוה/ה" (HERITAGE): מרחיבים תקרה אישית
     if (newAbs > 0.95 * st.gmax) st.gmax = newAbs / 0.95;
     st.abs = newAbs;
@@ -240,10 +337,14 @@ export function recordTest(key, value, opts = {}) {
     result.measuredGain = (ratio - 1) * 100;
     result.newGain = statGain(k);
   }
-  state.tests.push({ key, value, date, at: Date.now() });
+  st.lastCalib = { abs: st.abs, date };
+  // EXP על מבחן: פעם ב-6 ימים לכל מבחן (אחרת אפשר "לחוות" EXP מהזנות חוזרות)
+  const lastXP = [...state.tests].reverse().find(t => t.key === key && t.xp);
+  const xpNow = !lastXP || daysBetween(lastXP.date, date) >= 6 ? 40 : 0;
+  state.tests.push({ key, value, date, at: Date.now(), xp: xpNow });
   // מבחן כוח חדש = עוגן חדש לחזרות, אז מאפסים את מדרגות ההתקדמות בכוח
   if (key === 'pushups' && !result.baseline) prog().str = 0;
-  result.xp = addXP(40);
+  result.xp = xpNow ? addXP(xpNow) : 0;
   snapshot(today());
   save();
   return result;
@@ -261,15 +362,16 @@ export function deleteTest(at) {
   const first = state.tests.find(x => x.key === t.key);
   if (first === t) return resetBaseline(t.key);
   state.tests = state.tests.filter(x => x !== t);
-  state.xp = Math.max(0, state.xp - 40);
+  state.xp = Math.max(0, state.xp - (t.xp ?? 40));
   save();
   return { reset: false };
 }
 export function resetBaseline(key) {
-  const n = state.tests.filter(x => x.key === key).length;
+  const mine = state.tests.filter(x => x.key === key);
+  const n = mine.length;
   state.tests = state.tests.filter(x => x.key !== key);
   delete state.baselines[key];
-  state.xp = Math.max(0, state.xp - 40 * n);
+  state.xp = Math.max(0, state.xp - mine.reduce((a, t) => a + (t.xp ?? 40), 0));
   if (key === 'pushups') prog().str = 0;
   save();
   return { reset: true, removed: n };
@@ -285,9 +387,16 @@ export function saveCheckin(date, data) {
 }
 
 // ---------------- נתוני בריאות ----------------
+// טווחים סבירים לנתוני בריאות — ערך מחוץ לטווח נזרק
+const HEALTH_RANGE = { steps: [0, 70000], sleepH: [0, 16], rhr: [25, 150], hrv: [5, 300], vo2: [15, 90], activeKcal: [0, 8000], exerciseMin: [0, 600], weightKg: [25, 300] };
 export function mergeHealth(date, data) {
   const cur = state.health[date] || {};
-  for (const [k, v] of Object.entries(data)) if (v !== null && v !== undefined && !Number.isNaN(v)) cur[k] = v;
+  for (const [k, v] of Object.entries(data)) {
+    if (v === null || v === undefined || Number.isNaN(v)) continue;
+    const R = HEALTH_RANGE[k];
+    if (R && (v < R[0] || v > R[1])) continue;
+    cur[k] = v;
+  }
   state.health[date] = cur;
   save();
 }
@@ -607,13 +716,15 @@ export function completeHabit(date, questId) {
   if (!qq || !h || qq.done) return null;
   const lib = h.key !== 'custom' ? libraryItem(h.key) : null;
   const effects = lib?.effects || {};
-  const entry = applyActivity('habit', {}, { date, effects, label: `${h.icon} ${h.name}`, note: lib?.note, questId, xp: 12 });
+  // EXP על הרגלים: עד 6 הרגלים ביום (אחרת אפשר להוסיף 30 הרגלים ולחוות EXP)
+  const habitsToday = state.log.filter(e => e.date === date && e.type === 'habit' && e.questId).length;
+  const entry = applyActivity('habit', {}, { date, effects, label: `${h.icon} ${h.name}`, note: lib?.note, questId, xp: habitsToday >= 6 ? 0 : 12 });
   state.habitDone ||= {};
   const arr = (state.habitDone[h.id] ||= []);
   if (!arr.includes(date)) arr.push(date);
   const before = automaticity(arr.length - 1), after = automaticity(arr.length);
   let rooted = false;
-  if (before < 0.95 && after >= 0.95) { addXP(150); rooted = true; }
+  if (before < 0.95 && after >= 0.95 && !h.rootedAwarded) { addXP(150); h.rootedAwarded = today(); rooted = true; }
   const res = completeQuest(date, questId, entry);
   return { entry, ...res, days: arr.length, auto: after, rooted };
 }
