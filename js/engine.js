@@ -8,6 +8,7 @@ import {
 import { HABIT_LIBRARY, libraryItem, automaticity } from './habits.js';
 import { SPECIAL_POOL, RARITY, poolItem, seeded } from './specials.js';
 import { ACHIEVEMENTS } from './achievements.js';
+import { normScore } from './norms.js';
 
 const STORE_KEY = 'ascend.v1';
 
@@ -148,7 +149,30 @@ export function statGain(k) {
   const st = state.stats[k];
   return ((1 + st.abs / 100) / (1 + st.base / 100) - 1) * 100;
 }
-export function statValue(k) { return 100 * (1 + statGain(k) / 100); }
+// ערך מוצג: 10 = הממוצע לגילך ומינך (לפי ההערכה הראשונית), ואז גדל עם השיפור
+export function statValue(k) {
+  const st = state.stats[k];
+  return (st.norm?.score0 ?? 10) * (1 + statGain(k) / 100);
+}
+export function statNorm(k) { return state.stats[k].norm || null; }
+
+// מחשב את נקודת הפתיחה מול הנורמה, לפי מבחן ההתחלה של התכונה
+const NORM_TESTS = { STR: ['pushups', 'squat1rm'], END: ['vo2', 'cooper'], SPD: ['sprint'], FLX: ['sitreach'], MND: ['who5'] };
+export function recomputeNorms() {
+  const P = state.profile;
+  for (const [k, keys] of Object.entries(NORM_TESTS)) {
+    const st = state.stats[k];
+    // הבסיס הראשון שנמדד לתכונה (לפי תאריך)
+    const bls = keys.map(key => state.baselines[key] && { key, ...state.baselines[key] }).filter(Boolean).sort((a, b) => a.date < b.date ? -1 : 1);
+    const bl = bls.find(b => normScore(b.key, b.value, P.age, P.sex));
+    if (!bl) { delete st.norm; continue; }
+    const n = normScore(bl.key, bl.value, P.age, P.sex);
+    // גובה הציון ביום הבסיס = ציון הנורמה. השיפור מאז מתווסף עליו.
+    const gainAtBl = ((1 + bl.abs / 100) / (1 + st.base / 100) - 1) * 100;
+    st.norm = { score0: n.score / (1 + gainAtBl / 100), scoreAtTest: n.score, pct: n.pct, test: bl.key, value: bl.value, date: bl.date, median: n.median, src: n.src, rough: n.rough };
+  }
+  save();
+}
 
 // ---------------- רמות ודרגות ----------------
 export function xpToNext(level) { return 100 + 25 * (level - 1); }
@@ -338,6 +362,8 @@ export function recordTest(key, value, opts = {}) {
   if (!bl) {
     state.baselines[key] = { value, date, abs: st.abs };
     result.baseline = true;
+    recomputeNorms();
+    result.norm = normScore(key, value, state.profile.age, state.profile.sex);
   } else {
     const ratio = T.toIndex(value) / T.toIndex(bl.value);
     const measuredAbs = ((1 + bl.abs / 100) * ratio - 1) * 100;
@@ -391,6 +417,7 @@ export function resetBaseline(key) {
   const n = mine.length;
   state.tests = state.tests.filter(x => x.key !== key);
   delete state.baselines[key];
+  recomputeNorms();
   state.xp = Math.max(0, state.xp - mine.reduce((a, t) => a + (t.xp ?? 40), 0));
   if (key === 'pushups') prog().str = 0;
   save();

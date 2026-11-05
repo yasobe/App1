@@ -273,6 +273,8 @@ export const SOURCES = {
   golden2005: 'Golden RN et al. — The efficacy of light therapy in the treatment of mood disorders: a review and meta-analysis of the evidence. Am J Psychiatry. 2005;162(4):656–662.',
   seligman2005: 'Seligman MEP, Steen TA, Park N, Peterson C — Positive psychology progress: empirical validation of interventions. Am Psychol. 2005;60(5):410–421.',
   gollwitzer2006: 'Gollwitzer PM, Sheeran P — Implementation intentions and goal achievement: a meta-analysis of effects and processes. Adv Exp Soc Psychol. 2006;38:69–119.',
+  csep2013: 'Canadian Society for Exercise Physiology — CSEP-PATH Resource Manual, 2013 (נורמות שכיבות סמיכה ו-Sit & Reach).',
+  kaminsky2015: 'Kaminsky LA et al. — Reference standards for cardiorespiratory fitness (FRIEND registry). Mayo Clin Proc. 2015;90(11):1515–1523.',
   tanaka2001: 'Tanaka H, Monahan KD, Seals DR — Age-predicted maximal heart rate revisited. J Am Coll Cardiol. 2001;37(1):153–156.',
 };
 

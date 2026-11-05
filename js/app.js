@@ -7,6 +7,7 @@ import { parseSyncText, parseHashSync, importHealthExport } from './health.js';
 import { HABIT_LIBRARY, HABIT_CATEGORIES, HABIT_ICONS, HABIT_MEDIAN_DAYS } from './habits.js';
 import { RARITY } from './specials.js';
 import { ACHIEVEMENTS, achievement } from './achievements.js';
+import { NORM_SOURCES, bandLabel, SEX_HE } from './norms.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -53,6 +54,7 @@ function boot() {
 }
 
 function dailyTick() {
+  if (!E.state.normsV) { E.recomputeNorms(); E.state.normsV = 1; E.save(); }
   E.runDecay();
   const pen = E.penaltyCheck();
   E.questsFor(E.today());
@@ -168,13 +170,15 @@ function renderOnboarding() {
         <div class="grow"><label class="f">גיל</label><input type="number" name="age" inputmode="numeric" min="12" max="99" value="25"></div>
         <div class="grow"><label class="f">משקל (ק״ג)</label><input type="text" name="weight" inputmode="decimal" min="30" max="250" step="0.1" value="75"></div>
       </div>
+      <label class="f">מין (להשוואה לממוצע של בני גילך)</label>
+      <select name="sex"><option value="m">זכר</option><option value="f">נקבה</option></select>
       <label class="f">רמת כושר נוכחית</label>
       <select name="trainingStatus">${Object.entries(TRAINING_STATUS).map(([k, v]) => `<option value="${k}">${v.he}</option>`).join('')}</select>
       <label class="f">ציוד</label>
       <select name="equipment"><option value="none">בלי ציוד (משקל גוף)</option><option value="gym">יש חדר כושר</option></select>
       <label class="f">כמה ימי אימון בשבוע</label>
       <select name="daysPerWeek"><option>3</option><option selected>4</option><option>5</option><option>6</option></select>
-      <p class="small muted">היום הראשון יהיה יום מבחני הערכה — כדי שכל השיפורים יימדדו מנקודת הפתיחה האמיתית שלך.</p>
+      <p class="small muted">כל התכונות מתחילות ב-10 (הממוצע). אחרי מבחני ההערכה של היום הראשון, המערכת תשווה אותך לממוצע של בני גילך ומינך — ומשם יתחילו הסטטים שלך.</p>
       <button class="btn block" type="submit">קבלה ✔</button>
     </form>`, { icon: '!' })}`;
   $('#ob').onsubmit = e => {
@@ -182,7 +186,7 @@ function renderOnboarding() {
     const f = new FormData(e.target);
     E.createPlayer({
       name: f.get('name').trim() || 'שחקן', age: +f.get('age') || 25, weightKg: num(f.get('weight')) || 75,
-      trainingStatus: f.get('trainingStatus'), equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek'),
+      trainingStatus: f.get('trainingStatus'), equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek'), sex: f.get('sex') === 'f' ? 'f' : 'm',
     });
     E.questsFor(E.today());
     tab = 'quests';
@@ -235,12 +239,13 @@ function renderStatus() {
         const g = E.statGain(k);
         return `<button class="stat" data-stat="${k}">
           <span class="ic">${STATS[k].icon}</span>
-          <span class="grow"><span class="nm">${STATS[k].he}<span class="en">${k}</span>${calibrated(k) ? '<span class="tag">✓ מכויל</span>' : ''}</span>${sparkline(k)}</span>
+          <span class="grow"><span class="nm">${STATS[k].he}<span class="en">${k}</span>${E.statNorm(k) ? `<span class="tag">אחוזון ${E.statNorm(k).pct}${E.statNorm(k).rough ? '~' : ''}</span>` : '<span class="tag">טרם נמדד</span>'}${calibrated(k) ? '<span class="tag">✓ מכויל</span>' : ''}</span>${sparkline(k)}</span>
           <span class="val"><div class="v" style="color:${STATS[k].color}">${E.statValue(k).toFixed(1)}</div><div class="g ${g >= 0 ? 'good' : 'bad'}">${sgn(g, 1)}%</div></span>
         </button>`;
       }).join('')}
     </div>
-    <p class="small muted center" style="margin:10px 0 0">100 = נקודת הפתיחה שלך · לחצו על תכונה להסבר המחקרי</p>
+    <p class="small muted center" style="margin:10px 0 0">10 = הממוצע של ${P.sex ? SEX_HE[P.sex] : 'אנשים'} בני ${bandLabel(P.age)} · האחוז = השיפור שלך מאז ההתחלה · לחצו להסבר</p>
+    ${P.sex ? '' : `<div class="row" style="margin-top:8px;gap:6px"><span class="small grow">להשוואה מדויקת לממוצע — מין:</span><button class="btn ghost" data-sex="m" style="min-height:34px;padding:4px 12px">זכר</button><button class="btn ghost" data-sex="f" style="min-height:34px;padding:4px 12px">נקבה</button></div>`}
   `, { icon: '◆' })}
 
   ${habitsPanel()}
@@ -259,6 +264,7 @@ function renderStatus() {
   `;
   app.querySelectorAll('[data-stat]').forEach(b => b.onclick = () => statDetail(b.dataset.stat));
   $('#achBtn').onclick = achievementsModal;
+  app.querySelectorAll('[data-sex]').forEach(b => b.onclick = () => { E.state.profile.sex = b.dataset.sex; E.recomputeNorms(); render(); });
   $('#syncBtn').onclick = syncFromClipboard;
 }
 
@@ -293,6 +299,10 @@ function statDetail(k) {
       <div class="tile"><div class="t">שיפור מההתחלה</div><div class="n ${g >= 0 ? 'good' : 'bad'}">${sgn(g, 1)}%</div></div>
       <div class="tile"><div class="t">אימון סטנדרטי עכשיו</div><div class="n good">+${perStd.toFixed(2)}%</div></div>
     </div>
+    ${(() => { const n = E.statNorm(k); const P = E.state.profile; return n ? `<div class="gain-row"><b>מול הממוצע</b>
+      <div class="small" style="margin-top:4px">בהערכה הראשונה (${esc(n.date)}): ציון <b>${n.scoreAtTest.toFixed(1)}</b> — טוב מ-<b>${n.pct}%</b> מ${P.sex ? SEX_HE[P.sex] : 'אנשים'} בני ${bandLabel(P.age)}${n.rough ? ' (הערכה גסה)' : ''}.</div>
+      <div class="small muted">ממוצע לקבוצה: ${tv(n.test === 'cooper' ? 'vo2' : n.test, +n.median.toFixed(n.test === 'sprint' ? 2 : 1))}. ציון 10 = בדיוק הממוצע; כל 10% מעל הממוצע = עוד נקודה.</div>
+      <div class="src">${esc(NORM_SOURCES[n.src])}</div></div>` : `<p class="small muted">עוד אין מדידה — מוצג 10 (הממוצע). מבחן ההערכה יקבע את נקודת הפתיחה האמיתית שלך.</p>`; })()}
     <label class="f">התקדמות לעבר התקרה הריאלית (${fmt(st.gmax, 0)}% מעל לא-מאומן)</label>
     <div class="bar"><i style="width:${progress}%;background:${S.color}"></i></div>
     <p class="small muted">ככל שמתקרבים לתקרה, כל אימון מוסיף פחות — כמו במציאות.</p>
@@ -1003,6 +1013,23 @@ function readSitReach(m) {
   return i != null ? REACH_LEVELS[+i].cm : NaN;
 }
 
+// אחרי שכל מבחני ההערכה הראשונית הושלמו — מסך "הסטטים ההתחלתיים שלך"
+function maybeStartSummary() {
+  const S = E.state;
+  if (S.flags?.startShown) return;
+  const core = ['STR', 'END', 'FLX', 'MND'];
+  if (!core.every(k => E.statNorm(k) || ['squat1rm'].some(t => S.baselines[t]) && k === 'STR')) return;
+  S.flags ||= {}; S.flags.startShown = E.today(); E.save();
+  const P = S.profile;
+  modal(`
+    <div class="win-title"><span class="badge-i">◆</span><span class="en">INITIAL STATS</span></div>
+    <p class="center">הסטטים ההתחלתיים שלך, ביחס ל${P.sex ? SEX_HE[P.sex] : 'אנשים'} בני ${bandLabel(P.age)}:</p>
+    ${STAT_KEYS.map(k => { const n = E.statNorm(k); return `<div class="row between" style="margin:8px 0"><span>${STATS[k].icon} ${STATS[k].he}</span><span><b style="color:${STATS[k].color};font-size:20px">${E.statValue(k).toFixed(1)}</b> <span class="small muted">${n ? `אחוזון ${n.pct}${n.rough ? '~' : ''}` : 'טרם נמדד'}</span></span></div>`; }).join('')}
+    <p class="small muted">10 = בדיוק הממוצע. מעל 10 — חזק/ה מהממוצע; מתחת — כאן יש הכי הרבה מקום לשיפור, וגם הכי מהר.</p>
+    <button class="btn block" id="ok">יאללה, מתחילים</button>
+  `, m => m.querySelector('#ok').onclick = () => { closeModal(); tab = 'status'; render(); });
+}
+
 function showTestResult(r) {
   const T = TESTS[r.key], S = STATS[r.stat];
   E.takeMessages();
@@ -1012,7 +1039,12 @@ function showTestResult(r) {
     ${r.xp === 0 ? '<p class="center small muted">EXP על מבחן — פעם ב-6 ימים לכל מבחן.</p>' : ''}
     <p class="center">${esc(T.he)}: <b>${tv(r.key, r.value)}</b></p>
     ${r.capped ? `<p class="small warn">השיפור שנמדד גבוה ממה שאפשרי פיזיולוגית בזמן שעבר, אז נלקח עד ${sgn(r.cappedTo, 1)}%. אם המדידה נכונה, המדידות הבאות ישלימו את השאר.</p>` : ''}
-    ${r.baseline ? `<p class="center muted small">נקבעה נקודת התחלה. ההערכה של השבוע הבא תראה כמה באמת השתפרת.</p>` :
+    ${r.baseline ? (r.norm ? `<div class="tiles" style="grid-template-columns:1fr 1fr;margin:10px 0">
+        <div class="tile"><div class="t">${S.he} התחלתי</div><div class="n" style="color:${S.color}">${r.norm.score.toFixed(1)}</div></div>
+        <div class="tile"><div class="t">אחוזון${r.norm.rough ? ' (גס)' : ''}</div><div class="n">${r.norm.pct}</div></div></div>
+      <p class="center small">טוב מ-<b>${r.norm.pct}%</b> מ${E.state.profile.sex ? SEX_HE[E.state.profile.sex] : 'אנשים'} בני ${bandLabel(E.state.profile.age)}. 10 = הממוצע.</p>
+      ${r.key === 'who5' && r.value <= 28 ? `<p class="small warn">ציון נמוך כזה ב-WHO-5 יכול להצביע על מצב רוח ירוד לאורך זמן. שווה לדבר עם מישהו — רופא/ת משפחה, איש/אשת מקצוע, או ער״ן בטלפון 1201 (24/7).</p>` : ''}
+      <p class="center muted small">ההערכה של השבוע הבא תראה כמה באמת השתפרת.</p>` : `<p class="center muted small">נקבעה נקודת התחלה (למבחן הזה אין נורמה לאוכלוסייה — הציון נשאר 10). ההערכה של השבוע הבא תראה כמה השתפרת.</p>`) :
       `<div class="tiles">
         <div class="tile"><div class="t">המודל חזה</div><div class="n">${sgn(r.modelGain, 1)}%</div></div>
         <div class="tile"><div class="t">נמדד בפועל</div><div class="n ${r.measuredGain >= 0 ? 'good' : 'bad'}">${sgn(r.measuredGain, 1)}%</div></div>
@@ -1022,7 +1054,7 @@ function showTestResult(r) {
     ${!E.assessment().due ? `<p class="center cleared">ההערכה הושלמה ✦</p><button class="btn block" id="rep">📈 לדוח ההתקדמות</button><div style="height:8px"></div>` : ''}
     <button class="btn ${!E.assessment().due ? 'ghost ' : ''}block" id="ok">המשך</button>
   `, m => {
-    m.querySelector('#ok').onclick = closeModal;
+    m.querySelector('#ok').onclick = () => { closeModal(); maybeStartSummary(); };
     const rep = m.querySelector('#rep');
     if (rep) rep.onclick = () => { closeModal(); tab = 'measure'; render(); setTimeout(() => document.querySelectorAll('.win')[2]?.scrollIntoView({ behavior: 'smooth' }), 50); };
   });
@@ -1284,6 +1316,7 @@ function renderSystem() {
     <form id="pf">
       <label class="f">שם</label><input type="text" name="name" value="${esc(P.name)}" maxlength="24">
       <div class="row"><div class="grow"><label class="f">גיל</label><input type="number" name="age" value="${esc(P.age)}"></div><div class="grow"><label class="f">משקל</label><input type="text" inputmode="decimal" name="weightKg" value="${esc(P.weightKg)}"></div></div>
+      <label class="f">מין (להשוואה לנורמות)</label><select name="sex"><option value="m" ${P.sex === 'm' ? 'selected' : ''}>זכר</option><option value="f" ${P.sex === 'f' ? 'selected' : ''}>נקבה</option></select>
       <label class="f">ציוד</label><select name="equipment"><option value="none" ${P.equipment === 'none' ? 'selected' : ''}>בלי ציוד</option><option value="gym" ${P.equipment === 'gym' ? 'selected' : ''}>חדר כושר</option></select>
       <label class="f">ימי אימון בשבוע</label><select name="daysPerWeek">${[3, 4, 5, 6].map(n => `<option ${+P.daysPerWeek === n ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <button class="btn block" style="margin-top:12px">שמירה</button>
@@ -1332,13 +1365,13 @@ function renderSystem() {
     <div class="btn-row"><button class="btn" id="exp">⬇ גיבוי</button><label class="btn ghost">⬆ שחזור<input type="file" id="imp" accept=".json,application/json" hidden></label></div>
     <button class="btn danger block" id="rst" style="margin-top:10px">איפוס מלא</button>
   `, { icon: '⛁' })}
-  <p class="small muted center en">ASCEND v1.5</p>
+  <p class="small muted center en">ASCEND v1.6</p>
   `;
   $('#pf').onsubmit = e => {
     e.preventDefault();
     const f = new FormData(e.target);
-    Object.assign(E.state.profile, { name: f.get('name') || P.name, age: +f.get('age') || P.age, weightKg: num(f.get('weightKg')) || P.weightKg, equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek') });
-    E.save(); toast('נשמר ✓');
+    Object.assign(E.state.profile, { name: f.get('name') || P.name, age: +f.get('age') || P.age, weightKg: num(f.get('weightKg')) || P.weightKg, equipment: f.get('equipment'), daysPerWeek: +f.get('daysPerWeek'), sex: f.get('sex') === 'f' ? 'f' : 'm' });
+    E.recomputeNorms(); E.save(); toast('נשמר ✓');
   };
   $('#exp').onclick = async () => {
     const blob = new Blob([E.exportBackup()], { type: 'application/json' });

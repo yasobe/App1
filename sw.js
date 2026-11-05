@@ -1,8 +1,8 @@
 // Service worker — עבודה אופליין. להעלות VERSION בכל שינוי.
-const VERSION = 'ascend-v1.5.1';
+const VERSION = 'ascend-v1.6.0';
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
-  './js/app.js', './js/engine.js', './js/research.js', './js/health.js', './js/habits.js', './js/specials.js', './js/achievements.js', './vendor/fflate.js',
+  './js/app.js', './js/engine.js', './js/research.js', './js/health.js', './js/habits.js', './js/specials.js', './js/achievements.js', './js/norms.js', './vendor/fflate.js',
   './icons/icon.svg', './icons/apple-touch-icon.png', './icons/icon-192.png', './icons/icon-512.png',
 ];
 self.addEventListener('install', e => {
